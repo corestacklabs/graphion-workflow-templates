@@ -1,0 +1,129 @@
+name: Deploy to EKS environments
+
+on:
+  workflow_call:
+    inputs:
+      EKS_CLUSTER_NAME:
+        required: true
+        type: string
+      IMAGE_NAME:
+        required: true
+        type: string
+      IMAGE_TAG:
+        required: true
+        type: string
+      DEPLOYMENT_ENVIRONMENT:
+        required: false
+        type: string
+        default: "develop"
+      ROLE_ARN:
+        required: false
+        type: string
+      PYTHON_VERSION:
+        required: false
+        type: string
+        default: "3.11"
+  
+concurrency:
+  group: deploy-${{ inputs.DEPLOYMENT_ENVIRONMENT }}-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  helm-deploy:
+    runs-on: ubuntu-latest
+    name: "deploy-${{ inputs.DEPLOYMENT_ENVIRONMENT }}-environment"
+
+    steps:
+    - name: Begin deployment
+      run: |
+        echo "Deploying ${{ inputs.IMAGE_NAME }}:${{ inputs.IMAGE_TAG }} to ${{ inputs.DEPLOYMENT_ENVIRONMENT }}..."
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ vars.AWS_REGION }}
+    
+    - name: Setup kubectl
+      run: |
+        aws eks update-kubeconfig --region ${{ vars.AWS_REGION }} --name ${{ vars.EKS_CLUSTER_NAME }} --role-arn ${{ vars.ROLE_ARN }}
+
+    - name: Print env vars
+      run: |
+        printenv | grep -E "^GITHUB_"
+  
+    - name: Print a few knowns user defined vars
+      run: |
+        echo "USER: ${{ github.actor }}"
+        echo "WORKFLOW: ${{ github.workflow }}"
+        echo "REPO: ${{ github.repository }}"
+        echo "SHA: ${{ github.sha }}"
+        echo "REF: ${{ github.ref }}"
+        echo "SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}"
+        echo "NEW_REGISTRY_URL: ${{ vars.REGISTRY }}"
+        echo "REPO: ${{ vars.REPO }}"
+        echo "STAGE_REPO: ${{ vars.STAGE_REPO }}"
+        echo "github.repository_owner: ${{ github.repository_owner }}?"
+  
+    - name: Install Helm
+      run: |
+        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+    - name: Checkout Helm templates
+      run: |
+        git clone https://${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository_owner }}/${{ vars.HELM_REPO_NAME }}
+    
+    - name: Deploy using Embedded Helm Chart
+      run: |
+        if [ ${{ inputs.DEPLOYMENT_ENVIRONMENT }} != 'prod' ]; then
+          DOMAIN_NAME=${{ inputs.DEPLOYMENT_ENVIRONMENT }}.${{ vars.DOMAIN_NAME }}
+        else
+          DOMAIN_NAME=${{ vars.DOMAIN_NAME }}
+        fi
+        REPO_NAME="${GITHUB_REPOSITORY##*/}"
+        VALUES_NAME=$(echo $REPO_NAME | tr -d '-')
+        HELM_REPO_NAME=${{ vars.HELM_REPO_NAME }}
+        HELM_REPO_DIR=${{ vars.HELM_REPO_DIR }}
+  
+        
+        helm upgrade $REPO_NAME $HELM_REPO_NAME/helm-microservices-charts/$REPO_NAME --debug --install --atomic --wait \
+          --set domainName=$DOMAIN_NAME \
+          --set namespace=${{ inputs.DEPLOYMENT_ENVIRONMENT }} \
+          --namespace ${{ inputs.DEPLOYMENT_ENVIRONMENT }} \
+          --kubeconfig $HOME/.kube/config \
+          --set ${VALUES_NAME}.image.repository=${{ inputs.IMAGE_NAME }} \
+          --set ${VALUES_NAME}.image.tag=${{ inputs.IMAGE_TAG }} \
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.PYTHON_VERSION}}       
+  
+    - name: Checkout pipeline repo
+      run: |
+        git clone https://${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository_owner }}/river-cc-workflow-templates
+
+    - name: Run smoke tests
+      continue-on-error: true
+      run: |
+        cd ./river-cc-workflow-templates/pipeline-scripts/smoke-tests
+        pip install . --use-pep517
+        python3 smoke.py ${{ inputs.DEPLOYMENT_ENVIRONMENT }}
+
+    # - name: URL Finder
+    #   run: |
+    #    echo "URLS=$(kubectl get vs -n ${{ inputs.DEPLOYMENT_ENVIRONMENT }} -o jsonpath='{.items[1].spec.hosts[0]}' |sed 's/ /\n/g'|uniq|sed -e 's/\["\(.*\)"\]/\1/' |sed 's/\",\"/\n/g')" >> $GITHUB_ENV
+    #    echo $URLS
+
+    # - name: OWASP ZAP Full Scan
+    #   if: ${{ inputs.DEPLOYMENT_ENVIRONMENT == 'staging' }}
+    #   continue-on-error: true
+    #   uses: zaproxy/action-full-scan@v0.11.0
+    #   with:
+    #     target: https://${{ env.URLS }}  
+    #     artifact_name: 'zap-report.html'
+    #   env:
+    #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  

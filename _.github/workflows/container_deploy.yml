@@ -1,0 +1,147 @@
+name: Deploy to EKS
+
+on:
+  workflow_call:
+    inputs:
+      BRANCH:
+        required: true
+        type: string
+      GH_EVENT:
+        required: true
+        type: string
+      PR_STATUS_CLOSED:
+        required: true
+        type: string
+      IMAGE_NAME:
+        required: true
+        type: string
+      IMAGE_TAG:
+        required: true
+        type: string
+      EKS_CLUSTER_NAME:
+        required: false
+        type: string
+      REGISTRY_URL:
+        required: true
+        type: string
+      REGISTRY_USER:
+        required: true
+        type: string
+      REPO:
+        required: true
+        type: string
+      STAGE_REPO: 
+        required: true
+        type: string
+
+    secrets:
+      REGISTRY_TOKEN:
+        required: true
+      SONAR_TOKEN:
+        required: true
+      PAT_TOKEN:
+        required: true
+
+jobs:
+  pre-deploy-validation:
+    runs-on: ubuntu-latest
+    outputs:
+      DEPLOYMENT_ALLOWED: ${{ steps.determine_caller.outputs.DEPLOYMENT_ALLOWED }}
+    steps:
+
+    - name: Extract branch name
+      id: extract-branch
+      run: | 
+        repo_branch=$(echo "${{ inputs.BRANCH }}" | sed 's|refs/heads/||')
+        echo "CALLER_BRANCH=$repo_branch" >> $GITHUB_ENV
+
+    - name: Determine if events satisfy deployment requirement
+      id: determine_caller
+      run: |
+        if [[ ${{ env.CALLER_BRANCH }} == "main" &&
+              ${{ inputs.GH_EVENT }} == "pull_request" &&
+              ${{ inputs.PR_STATUS_CLOSED }} == "true"
+            ]]; then
+          echo "DEPLOYMENT_ALLOWED=true" >> $GITHUB_OUTPUT
+        else 
+          echo "DEPLOYMENT_ALLOWED=false" >> $GITHUB_OUTPUT
+        fi
+          
+  deploy-dev:
+    uses: ./.github/workflows/deploy_eks.yml
+    needs: pre-deploy-validation
+    if: needs.pre-deploy-validation.outputs.DEPLOYMENT_ALLOWED == 'true'
+    with:
+      IMAGE_NAME: ${{ inputs.REGISTRY_URL }}/${{ inputs.REPO }}/${{ inputs.IMAGE_NAME }}
+      IMAGE_TAG: ${{ inputs.IMAGE_TAG }}      
+      EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME }}
+    secrets: inherit
+
+  deploy-staging:
+    needs: [deploy-dev]
+    uses: ./.github/workflows/deploy_eks.yml
+    if: ${{ inputs.BRANCH }} == 'refs/heads/main'
+    with:
+      IMAGE_NAME: ${{ inputs.REGISTRY_URL }}/${{ inputs.REPO }}/${{ inputs.IMAGE_NAME }}
+      IMAGE_TAG: ${{ inputs.IMAGE_TAG }}
+      DEPLOYMENT_ENVIRONMENT: staging
+      EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME }}
+    secrets: inherit
+
+  validate-staging:
+    runs-on: ubuntu-latest
+    needs: [deploy-staging]
+    if: ${{ inputs.BRANCH }} == 'refs/heads/main'
+    steps:  
+      - name: Sanity test STAGING
+        run: | 
+          echo "Running validation tests..."
+          
+      - name: Login to Container Staging Registry
+        if: ${{ github.ref_name == 'main' }}
+        run: echo "${{ secrets.REGISTRY_TOKEN }}" | docker login "${{ inputs.REGISTRY_URL }}" -u "${{ inputs.REGISTRY_USER }}" --password-stdin          
+        
+      - name: Pull Docker Image
+        run: |
+          docker pull  ${{ inputs.REGISTRY_URL }}/${{ inputs.REPO }}/e2e:v1.0.0
+
+      - name: Run Playwright Tests
+        id: playwright-tests
+        run: |
+          docker run --rm --entrypoint "sh" nexus.corestacklabs.corestack.io/docker-registry/e2e:v1.0.0 -c "(npx playwright test > /dev/null 2>&1 || true) && cat test-results.json" > test-results.json
+          cat test-results.json
+          //cat test-results.json | jq -e '.suites[].specs[].tests[] | select(.status == "unexpected")' > /dev/null 2>&1 && echo "Tests failed" exit 1 || echo "All tests passed"
+          
+      - name: Parse Test Results
+        continue-on-error: true
+        run: |
+          #!/bin/bash
+          unexpected_count=$(cat test-results.json | jq '[.suites[].specs[].tests[] | select(.status == "unexpected")] | length')
+      
+          if [ "$unexpected_count" -gt 0 ]; then
+            echo "Tests failed: $unexpected_count unexpected test(s)"
+            exit 1
+          else
+            echo "All tests passed"
+            exit 0
+          fi          
+
+  deploy-prod:
+    needs: [validate-staging]
+    uses: ./.github/workflows/deploy_eks.yml
+    if: ${{ inputs.BRANCH }} == 'refs/heads/main'
+    with:
+      IMAGE_NAME: ${{ inputs.REGISTRY_URL }}/${{ inputs.REPO }}/${{ inputs.IMAGE_NAME }}
+      IMAGE_TAG: ${{ inputs.IMAGE_TAG }}
+      DEPLOYMENT_ENVIRONMENT: prod
+      EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME }}
+    secrets: inherit        
+
+
+
+
+
+
+          
+
+

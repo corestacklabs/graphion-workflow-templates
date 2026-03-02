@@ -1,0 +1,288 @@
+name: Build, Scan, and Push Docker Image to Container Registry
+on:
+  workflow_call:
+    secrets:
+      REGISTRY_TOKEN:
+        required: true
+      SONAR_TOKEN:
+        required: true
+      PAT_TOKEN:
+        required: true
+
+    inputs:
+      BUILD_LANGUAGE:
+        required: false
+        type: string
+      SRC_DIR:
+        required: false
+        type: string
+        default: "./"
+      TEST_DIR:
+        required: false
+        type: string
+        default: "./tests"
+      PYTHON_VERSION:
+        required: false
+        type: string
+        default: "3.11"
+      IMAGE_NAME:
+        required: true
+        type: string
+      IMAGE_TAG:
+        required: true
+        type: string
+      REGISTRY_URL:
+        required: true
+        type: string
+      REGISTRY_USER:
+        required: true
+        type: string
+      SONAR_HOST_URL:
+        required: true
+        type: string
+      REPO:
+        required: true
+        type: string
+      STAGE_REPO:
+        required: true
+        type: string
+
+
+jobs:
+  build-scan-push:
+    name: ${{ github.ref == 'refs/heads/main' && 'build-scan-push' || 'build-scan' }}
+    runs-on: ubuntu-24.04
+
+    env:
+      BUILD_LANGUAGE: ${{ inputs.BUILD_LANGUAGE }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        if: ${{ github.ref_name == 'main' }}
+        uses: docker/setup-buildx-action@v3
+
+      - name: Setup Crane
+        if: ${{ github.ref_name == 'main' }}
+        uses: imjasonh/setup-crane@v0.4
+
+      - name: Setup Python (Optional)
+        if: env.BUILD_LANGUAGE == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.PYTHON_VERSION}}
+
+      - name: Install dependencies for flake8/pytest
+        if: env.BUILD_LANGUAGE == 'python'
+        run: |
+            python -m pip install --upgrade pip
+            pip install flake8 pytest
+            python -m pip install -r requirements.txt
+
+      - name: Run Python lint
+        if: env.BUILD_LANGUAGE == 'python'
+        run: flake8 . --count --max-complexity=10 --max-line-length=127 --statistics
+
+      - name: Run pytest unit tests
+        if: ${{ env.BUILD_LANGUAGE == 'python' }}
+        run: |
+           if [ -d ${{ inputs.TEST_DIR }}/unit ]; then
+            echo "Running pytest on tests found in ${{ inputs.TEST_DIR }}/unit"
+            #pytest ${{ inputs.TEST_DIR }}/unit
+            #pytest --cov=src --cov-report=xml:coverage.xml ./tests/unit
+            pytest --cov-report=xml:coverage.xml --cov=. tests/unit/
+            else
+            echo "No unit test file(s) found, skipping unit tests."
+           fi
+
+      - name: Run pytest int tests
+        if: ${{ github.ref == 'refs/heads/main' && env.BUILD_LANGUAGE == 'python' }}
+        run: |
+          if [ -d ${{ inputs.TEST_DIR }}/int ]; then
+            echo "Running pytest on tests found in ${{ inputs.TEST_DIR }}/int"
+            pytest ${{ inputs.TEST_DIR }}/int
+           else
+            echo "No int test file(s) found, skipping integration tests."
+           fi
+
+      - name: Setup Node (Optional)
+        if: env.BUILD_LANGUAGE == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install node dependencies
+        if: env.BUILD_LANGUAGE == 'node'
+        run: npm install
+
+      - name: Run Node lint
+        if: env.BUILD_LANGUAGE == 'node'
+        run: npm run lint
+
+      - name: Run Node Format
+        if: env.BUILD_LANGUAGE == 'node'
+        run: npm run format
+
+      - name: Run Node Tests
+        if: env.BUILD_LANGUAGE == 'node'
+        run: npm run test
+
+      - name: Set SonarQube Project name
+        run:  echo "SONAR_PROJECT=$( echo $GITHUB_REPOSITORY | awk -F / '{print $NF}')" >> $GITHUB_ENV
+
+      - name: SonarQube Scan
+        uses: sonarsource/sonarqube-scan-action@v2.3.0
+        with:
+          args: >
+            -Dsonar.projectKey=${{ env.SONAR_PROJECT }}
+            -Dsonar.qualitygate.wait=true
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+
+
+      - name: Install requirements for documentation generation (Optional)
+        if: ${{ github.ref_name == 'main' && env.BUILD_LANGUAGE == 'python'}}
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install docutils pydoctor
+
+      - name: Generate API documentation with pydoctor (Optional)
+        if: ${{ github.ref_name == 'main' && env.BUILD_LANGUAGE == 'python'}}
+        continue-on-error: true
+        id: pydoctor_scan
+        run: |
+              # Run pydoctor build
+              mkdir -p ./public
+              pydoctor \
+                  --project-name=Python_Test \
+                  --project-url=https://github.com/$GITHUB_REPOSITORY \
+                  --html-viewsource-base=https://github.com/$GITHUB_REPOSITORY/tree/$GITHUB_SHA \
+                  --make-html \
+                  --html-output=public\
+                  --project-base-dir="$(pwd)" \
+                  --docformat=restructuredtext \
+                  --intersphinx=https://docs.python.org/3/objects.inv \
+                  ./
+      
+      - name: Upload PyDoctor documentation as artifact (Optional)
+        if: ${{ github.ref_name == 'main' && env.BUILD_LANGUAGE == 'python'}}
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+            name: pydoctor-docs
+            path: public
+
+      - name: Deploy pydoctor report to GitHub Pages
+        if: ${{ github.ref_name == 'main' && env.BUILD_LANGUAGE == 'python'}}
+        continue-on-error: true
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          publish_dir: ./public
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Container Staging Registry
+        if: ${{ github.ref_name == 'main' }}
+        run: echo "${{ secrets.REGISTRY_TOKEN }}" | docker login "${{ inputs.REGISTRY_URL }}" -u "${{ inputs.REGISTRY_USER }}" --password-stdin
+
+      - name: Build Docker Image
+        if: ${{ github.ref_name == 'main' }}
+        run: docker build -t ${{ inputs.REGISTRY_URL }}/${{ inputs.STAGE_REPO }}/${{ inputs.IMAGE_NAME }}:${{ inputs.IMAGE_TAG }} .
+
+      - name: Push Docker Image to Staging Registry
+        if: ${{ github.ref_name == 'main' }}
+        run: docker push ${{ inputs.REGISTRY_URL }}/${{ inputs.STAGE_REPO }}/${{ inputs.IMAGE_NAME }}:${{ inputs.IMAGE_TAG }}
+
+      - name: Create SBOM
+        if: ${{ github.ref_name == 'main' }}
+        uses: anchore/sbom-action@v0
+        with:
+         image: ${{ inputs.REGISTRY_URL }}/${{ inputs.STAGE_REPO }}/${{ inputs.IMAGE_NAME }}:${{ inputs.IMAGE_TAG }}
+         format: cyclonedx-json
+         output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
+
+      ## NOTE ## The results from Trivy don't seem to align with reality. Scan is disabled for now. 
+      # - name: Run Trivy Scan
+      #   uses: aquasecurity/trivy-action@0.24.0
+      #   with:
+      #     image-ref: ${{ inputs.REGISTRY_URL }}/${{ inputs.STAGE_REPO }}/${{ inputs.IMAGE_NAME }}:${{ inputs.IMAGE_TAG }}
+      #     severity: CRITICAL,HIGH,MEDIUM
+      #     ignore-unfixed: false
+      #     format: json
+      #     output: trivy-${{ inputs.REGISTRY_URL }}-${{ inputs.STAGE_REPO }}-${{ inputs.IMAGE_NAME }}-${{ inputs.IMAGE_TAG }}.json
+      #     # format: 'sarif'
+      #     # limit-severities-for-sarif: false
+      #     # output: 'trivy-results.sarif'
+
+      # - name: Upload Trivy Artifact
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: trivy-output
+      #     path: trivy-${{ inputs.REGISTRY_URL }}-${{ inputs.STAGE_REPO }}-${{ inputs.IMAGE_NAME }}-${{ inputs.IMAGE_TAG }}.json
+
+      # - name: Trivy Analysis
+      #   run: |
+      #     cat trivy-${{ inputs.REGISTRY_URL }}-${{ inputs.STAGE_REPO }}-${{ inputs.IMAGE_NAME }}-${{ inputs.IMAGE_TAG }}.json |jq > formatted_report.json
+      #     set +e
+      #     # CONTAINER_FOUND_CRITICALS=$(egrep -c "\"Severity\"\:\ \"CRITICAL\"" formatted_report.json)
+      #     # CONTAINER_FOUND_HIGHS=$(egrep -c "\"Severity\"\:\ \"HIGH\"" formatted_report.json)
+      #     # CONTAINER_FOUND_MEDIUMS=$(egrep -c "\"Severity\"\:\ \"MEDIUM\"" formatted_report.json)
+      #     # set -e
+      #     # echo "Criticals=$CONTAINER_FOUND_CRITICALS"
+      #     # echo "Highs=$CONTAINER_FOUND_HIGHS"
+      #     # echo "Mediums=$CONTAINER_FOUND_MEDIUMS"
+      #     CRITICAL_CVE=$(cat formatted_report.json |jq '[.Results[].Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length')
+      #     HIGH_CVE=$(cat formatted_report.json |jq '[.Results[].Vulnerabilities[]? | select(.Severity == "HIGH")] | length')
+      #     MEDIUM_CVE=$(cat formatted_report.json |jq '[.Results[].Vulnerabilities[]? | select(.Severity == "MEDIUM")] | length')
+      #     set -e
+      #     echo "Criticals=$CRITICAL_CVE"
+      #     echo "Highs=$HIGH_CVE"
+      #     echo "Mediums=$MEDIUM_CVE"
+
+      - name: Run Grype Scan
+        if: ${{ github.ref_name == 'main' }}
+        run: |
+            curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+            grype sbom:"${{ github.event.repository.name }}-sbom.cdx.json" -o cyclonedx-json > ${{ github.event.repository.name }}-sbom.json
+
+      - name: Upload Grype Artifact
+        if: ${{ github.ref_name == 'main' }}
+        uses: actions/upload-artifact@v4
+        with:
+            name: grype-output-cdx
+            path: ${{ github.event.repository.name }}-sbom.json
+
+      - name: Grype Analysis
+        if: ${{ github.ref_name == 'main' }}
+        run: |
+          set +e
+          ALLOWED_CRITICAL_CVE=10
+          ALLOWED_HIGH_CVE=40
+          CRITICAL_CVE=$(cat ${{ github.event.repository.name }}-sbom.json | jq '[.vulnerabilities[]? | select(.ratings[].severity == "critical")] |length')
+          HIGH_CVE=$(cat ${{ github.event.repository.name }}-sbom.json | jq '[.vulnerabilities[]? | select(.ratings[].severity == "high")] |length')
+          MEDIUM_CVE=$(cat ${{ github.event.repository.name }}-sbom.json | jq '[.vulnerabilities[]? | select(.ratings[].severity == "medium")] |length')
+          set -e
+          echo "Criticals=$CRITICAL_CVE"
+          echo "Highs=$HIGH_CVE"
+          echo "Mediums=$MEDIUM_CVE"
+          if [[ "$CRITICAL_CVE" -gt "$ALLOWED_CRITICAL_CVE" ]]; then
+            echo "Too many critical vulnerabilities found, exiting..."
+            exit 1
+          else
+            echo "Passed critical vulnerability threshold, continuing..."
+          fi
+          if [[ "$HIGH_CVE" -gt "$ALLOWED_HIGH_CVE" ]]; then
+            echo "Too many high vulnerabilities found, exiting..."
+            exit 1
+          else
+            echo "Passed high vulnerability threshold, continuing..."
+          fi
+
+      - name: Copy Scanned Staging Image to Repo
+        if: ${{ github.ref_name == 'main' }}
+        run: |
+         echo "Copying ${{ inputs.REGISTRY_URL }}/${{ inputs.STAGE_REPO }}/${{ inputs.IMAGE_NAME }}:${{ inputs.IMAGE_TAG }} to ${{ inputs.REGISTRY_URL }}/${{ inputs.repo }}/${{ inputs.IMAGE_NAME }}:${{ inputs.IMAGE_TAG }}"
+         crane copy ${{ inputs.REGISTRY_URL }}/${{ inputs.STAGE_REPO }}/${{ inputs.IMAGE_NAME }}:${{ inputs.IMAGE_TAG }} ${{ inputs.REGISTRY_URL }}/${{ inputs.repo }}/${{ inputs.IMAGE_NAME }}:${{ inputs.IMAGE_TAG }}
+         crane digest ${{ inputs.REGISTRY_URL }}/${{ inputs.repo }}/${{ inputs.IMAGE_NAME }}:${{ inputs.IMAGE_TAG }}
