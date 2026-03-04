@@ -1,0 +1,315 @@
+name: Create SBOM and Scan with Grype
+
+on:
+  workflow_call:
+    inputs:
+      FILE:
+        description: 'Path to input file for SBOM generation (e.g. Dockerfile or binary) - mutually exclusive with IMAGE and PATH'
+        required: false
+        type: string
+      PATH:
+        description: 'Path to directory for SBOM generation'
+        required: false
+        type: string
+      IMAGE:
+        description: 'Container image reference (e.g. myregistry/myapp:1.0)'
+        required: false
+        type: string
+      project_name:
+        description: 'AppSecOps project name (e.g. Payment Service) - used to resolve project_id'
+        type: string
+        required: true
+      sbom_definition_name:
+        description: 'Name for the SBOM definition (defaults to filename without extension)'
+        type: string
+        required: false
+        default: ''
+      build_id:
+        description: 'Build/version identifier (e.g. 1.0.0 or git SHA)'
+        type: string
+        required: false
+        default: '1.0.0'
+      api_base_url:
+        description: 'CoreStack API base URL'
+        type: string
+        required: false
+        default: 'https://api.corestack.io'
+      force_upload:
+        description: 'Allow upload if same content exists elsewhere (true/false)'
+        type: string
+        required: false
+        default: 'false'
+
+env:
+  API_BASE: ${{ inputs.api_base_url || 'https://api.corestack.io' }}
+      
+jobs:
+  create_sbom_and_scan:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create SBOM With Image
+        if: "${{ github.event.inputs.IMAGE != '' }}"
+        uses: anchore/sbom-action@v0
+        with:
+         image: ${{ github.event.inputs.IMAGE }}
+         format: cyclonedx-json
+         output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
+
+      - name: Create SBOM With File
+        if: "${{ github.event.inputs.FILE != '' }}"
+        uses: anchore/sbom-action@v0
+        with:
+         file: ${{ github.event.inputs.FILE }}
+         format: cyclonedx-json
+         output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
+
+      - name: Create SBOM With Path
+        if: "${{ github.event.inputs.PATH != '' }}"
+        uses: anchore/sbom-action@v0
+        with:
+         path: ${{ github.event.inputs.PATH }}
+         format: cyclonedx-json
+         output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
+
+      - name: Run Grype Scan
+        run: |
+            curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+            grype sbom:"${{ github.event.repository.name }}-sbom.cdx.json" -o cyclonedx-json > ${{ github.event.repository.name }}-sbom.json
+
+      - name: Upload Grype Artifact
+        uses: actions/upload-artifact@v4
+        with:
+            name: grype-output-cdx
+            path: ${{ github.event.repository.name }}-sbom.json
+            
+  upload-sbom:
+    needs: create_sbom_and_scan
+    runs-on: ubuntu-latest
+    steps:      
+      - name: Download Artifact
+        id: download-artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: grype-output-cdx
+
+      - name: Validate SBOM file exists
+        id: validate
+        run: |
+          if [ ! -f '${{ steps.download-artifact.outputs.grype-output-cdx }}' ]; then
+            echo "::error::SBOM file not found: ${{ steps.download-artifact.outputs.grype-output-cdx }}"
+            exit 1
+          fi
+          FILENAME=$(basename '${{ steps.download-artifact.outputs.grype-output-cdx }}')
+          echo "filename=$FILENAME" >> $GITHUB_OUTPUT
+          # Default sbom_definition_name to filename without extension
+          BASE="${FILENAME%.*}"
+          echo "sbom_name=${BASE}" >> $GITHUB_OUTPUT
+
+      - name: Get CoreStack auth token
+        id: auth
+        env:
+          ACCESS_KEY: ${{ secrets.CORESTACK_ACCESS_KEY }}
+          SECRET_KEY: ${{ secrets.CORESTACK_SECRET_KEY }}
+        run: |
+          if [ -z "$ACCESS_KEY" ] || [ -z "$SECRET_KEY" ]; then
+            echo "::error::Secrets CORESTACK_ACCESS_KEY and CORESTACK_SECRET_KEY must be set."
+            exit 1
+          fi
+          RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/auth/tokens" \
+            -H "Content-Type: application/json" \
+            -d "{\"access_key\":\"$ACCESS_KEY\",\"secret_key\":\"$SECRET_KEY\"}")
+          HTTP_CODE=$(echo "$RESP" | tail -n1)
+          BODY=$(echo "$RESP" | sed '$d')
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::Auth failed (HTTP $HTTP_CODE): $BODY"
+            exit 1
+          fi
+          # Postman: token.access_token, user.active_tenant_id
+          TOKEN=$(echo "$BODY" | jq -r '.token.access_token // .data.token.access_token // .data.key // .key // .access_token // empty')
+          TENANT_ID=$(echo "$BODY" | jq -r '.user.active_tenant_id // .data.user.active_tenant_id // empty')
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "::error::No token in response: $BODY"
+            exit 1
+          fi
+          if [ -z "$TENANT_ID" ] || [ "$TENANT_ID" = "null" ]; then
+            echo "::error::No tenant_id in response: $BODY"
+            exit 1
+          fi
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+          echo "tenant_id=$TENANT_ID" >> $GITHUB_OUTPUT
+          echo "Auth token and tenant_id obtained successfully."
+
+      - name: Get Project ID by Name
+        id: project
+        env:
+          AUTH_TOKEN: ${{ steps.auth.outputs.token }}
+          TENANT_ID: ${{ steps.auth.outputs.tenant_id }}
+        run: |
+          BODY=$(jq -n \
+            --arg tenant_id "$TENANT_ID" \
+            --arg project_name "${{ inputs.project_name }}" \
+            '{
+              filters: { tenant_id: $tenant_id, name: [$project_name], search: $project_name },
+              list_context: { batch_size: 10, batch_offset: 0 }
+            }')
+          RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/appsecops/projects/list" \
+            -H "Content-Type: application/json" \
+            -H "X-Auth-Token: $AUTH_TOKEN" \
+            -d "$BODY")
+          HTTP_CODE=$(echo "$RESP" | tail -n1)
+          RESP_BODY=$(echo "$RESP" | sed '$d')
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::Get project failed (HTTP $HTTP_CODE): $RESP_BODY"
+            exit 1
+          fi
+          RESULTS=$(echo "$RESP_BODY" | jq -r '.data.results // .results // empty')
+          if [ -z "$RESULTS" ] || [ "$RESULTS" = "null" ]; then
+            echo "::error::No project found for project_name: ${{ inputs.project_name }}"
+            exit 1
+          fi
+          PROJECT_ID=$(echo "$RESP_BODY" | jq -r '(.data.results // .results)[0] // empty')
+          if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "null" ]; then
+            echo "::error::No project ID in results: $RESP_BODY"
+            exit 1
+          fi
+          echo "project_id=$PROJECT_ID" >> $GITHUB_OUTPUT
+          echo "Project ID: $PROJECT_ID"
+
+      - name: Create SBOM Definition
+        id: sbom_def
+        env:
+          AUTH_TOKEN: ${{ steps.auth.outputs.token }}
+          TENANT_ID: ${{ steps.auth.outputs.tenant_id }}
+        run: |
+          SBOM_NAME="${{ inputs.sbom_definition_name }}"
+          if [ -z "$SBOM_NAME" ]; then
+            SBOM_NAME="${{ steps.validate.outputs.sbom_name }}"
+          fi
+          BODY=$(jq -n \
+            --arg name "$SBOM_NAME" \
+            --arg tenant_id "$TENANT_ID" \
+            --arg project_id "${{ steps.project.outputs.project_id }}" \
+            '{
+              name: $name,
+              description: "SBOM for container image scan",
+              tenant_id: $tenant_id,
+              appsecops_project_id: $project_id,
+              tags: []
+            }')
+          RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/appsecops/sbom_definition/create" \
+            -H "Content-Type: application/json" \
+            -H "X-Auth-Token: $AUTH_TOKEN" \
+            -d "$BODY")
+          HTTP_CODE=$(echo "$RESP" | tail -n1)
+          RESP_BODY=$(echo "$RESP" | sed '$d')
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::Create SBOM definition failed (HTTP $HTTP_CODE): $RESP_BODY"
+            exit 1
+          fi
+          SBOM_DEF_ID=$(echo "$RESP_BODY" | jq -r '.data.sbom_definition_id // .data.id // .sbom_definition_id // .id // empty')
+          if [ -z "$SBOM_DEF_ID" ] || [ "$SBOM_DEF_ID" = "null" ]; then
+            echo "::error::No sbom_definition_id in response: $RESP_BODY"
+            exit 1
+          fi
+          echo "sbom_definition_id=$SBOM_DEF_ID" >> $GITHUB_OUTPUT
+          echo "SBOM Definition ID: $SBOM_DEF_ID"
+
+      - name: Create attachment
+        id: attachment
+        env:
+          AUTH_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          FILENAME="${{ steps.validate.outputs.filename }}"
+          # Postman: name and file_name; response.id
+          RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/attachment/create" \
+            -H "Content-Type: application/json" \
+            -H "X-Auth-Token: $AUTH_TOKEN" \
+            -d "{\"name\":\"$FILENAME\",\"file_name\":\"$FILENAME\"}")
+          HTTP_CODE=$(echo "$RESP" | tail -n1)
+          BODY=$(echo "$RESP" | sed '$d')
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::Create attachment failed (HTTP $HTTP_CODE): $BODY"
+            exit 1
+          fi
+          ATTACHMENT_ID=$(echo "$BODY" | jq -r '.id // .data.id // empty')
+          if [ -z "$ATTACHMENT_ID" ] || [ "$ATTACHMENT_ID" = "null" ]; then
+            echo "::error::No attachment id in response: $BODY"
+            exit 1
+          fi
+          echo "attachment_id=$ATTACHMENT_ID" >> $GITHUB_OUTPUT
+          echo "Attachment created: $ATTACHMENT_ID"
+
+      - name: Upload SBOM file to attachment stream
+        id: upload
+        env:
+          AUTH_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          ATTACHMENT_ID="${{ steps.attachment.outputs.attachment_id }}"
+          SBOM_FILE="${{ steps.download-artifact.outputs.grype-output-cdx }}"
+          RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/attachment/item/${ATTACHMENT_ID}/stream" \
+            -H "X-Auth-Token: $AUTH_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data-binary "@${SBOM_FILE}")
+          HTTP_CODE=$(echo "$RESP" | tail -n1)
+          BODY=$(echo "$RESP" | sed '$d')
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::Upload failed (HTTP $HTTP_CODE): $BODY"
+            exit 1
+          fi
+          echo "SBOM file uploaded successfully."
+
+      - name: Upload SBOM Version
+        id: sbom_version
+        env:
+          AUTH_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          BUILD_ID="${{ inputs.build_id }}"
+          if [ -z "$BUILD_ID" ]; then
+            BUILD_ID="${{ github.sha }}"
+          fi
+          FORCE=false
+          if [ "${{ inputs.force_upload }}" = "true" ]; then
+            FORCE=true
+          fi
+          # Postman: sbom_file_format with __type AppSecopsSbomVersionFileFormatForCycloneDX, version 1.6
+          BODY=$(jq -n \
+            --arg tenant_id "${{ steps.auth.outputs.tenant_id }}" \
+            --arg sbom_definition_id "${{ steps.sbom_def.outputs.sbom_definition_id }}" \
+            --arg attachment_id "${{ steps.attachment.outputs.attachment_id }}" \
+            --arg build_id "$BUILD_ID" \
+            --argjson force $FORCE \
+            '{
+              tenant_id: $tenant_id,
+              sbom_definition_id: $sbom_definition_id,
+              attachment_id: $attachment_id,
+              sbom_file_format: { __type: "AppSecopsSbomVersionFileFormatForCycloneDX", version: "1.6" },
+              build_id: $build_id,
+              force: $force
+            }')
+          RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/appsecops/sbom_version/create" \
+            -H "Content-Type: application/json" \
+            -H "X-Auth-Token: $AUTH_TOKEN" \
+            -d "$BODY")
+          HTTP_CODE=$(echo "$RESP" | tail -n1)
+          RESP_BODY=$(echo "$RESP" | sed '$d')
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::Create SBOM version failed (HTTP $HTTP_CODE): $RESP_BODY"
+            exit 1
+          fi
+          VERSION_ID=$(echo "$RESP_BODY" | jq -r '.data.sbom_version_id // .data.id // .sbom_version_id // .id // empty')
+          echo "version_id=$VERSION_ID" >> $GITHUB_OUTPUT
+          echo "SBOM version created: $VERSION_ID"
+
+      - name: Summary
+        run: |
+          {
+            echo "## SBOM upload complete"
+            echo "- **Project ID:** ${{ steps.project.outputs.project_id }}"
+            echo "- **SBOM Definition ID:** ${{ steps.sbom_def.outputs.sbom_definition_id }}"
+            echo "- **Attachment ID:** ${{ steps.attachment.outputs.attachment_id }}"
+            echo "- **SBOM Version ID:** ${{ steps.sbom_version.outputs.version_id }}"
+            echo "- **Build ID:** ${{ inputs.build_id || github.sha }}"
+          } >> $GITHUB_STEP_SUMMARY
