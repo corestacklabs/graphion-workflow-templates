@@ -1,7 +1,14 @@
-name: Create SBOM and Scan with Grype
+name: Create, Scan, and Upload SBOM to CoreStack AppSecOps
 
 on:
   workflow_call:
+    secrets:
+      CORESTACK_ACCESS_KEY:
+        description: "API Access key from a CoreStack user"
+        required: true
+      CORESTACK_SECRET_KEY:
+        description: "API Secret key from a CoreStack user"
+        required: true
     inputs:
       FILE:
         description: 'Path to input file for SBOM generation (e.g. Dockerfile or binary) - mutually exclusive with IMAGE and PATH'
@@ -25,10 +32,10 @@ on:
         required: false
         default: ''
       build_id:
-        description: 'Build/version identifier (e.g. 1.0.0 or git SHA)'
+        description: 'Build/version identifier (e.g. 1.0.0 or git SHA) must be unique'
         type: string
         required: false
-        default: '1.0.0'
+        default: ''
       api_base_url:
         description: 'CoreStack API base URL'
         type: string
@@ -43,34 +50,34 @@ on:
 env:
   API_BASE: ${{ inputs.api_base_url || 'https://api.corestack.io' }}
       
-jobs:
+jobs:  
   create_sbom_and_scan:
-    runs-on: ubuntu-24.04
-    steps:
+    runs-on: ubuntu-latest
+    steps:          
       - name: Checkout code
         uses: actions/checkout@v4
-
+        
       - name: Create SBOM With Image
-        if: "${{ github.event.inputs.IMAGE != '' }}"
+        if: ${{ inputs.IMAGE != '' }}
         uses: anchore/sbom-action@v0
         with:
-         image: ${{ github.event.inputs.IMAGE }}
+         image: ${{ inputs.IMAGE }}
          format: cyclonedx-json
          output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
 
       - name: Create SBOM With File
-        if: "${{ github.event.inputs.FILE != '' }}"
+        if: ${{ inputs.FILE != '' }}
         uses: anchore/sbom-action@v0
         with:
-         file: ${{ github.event.inputs.FILE }}
+         file: ${{ inputs.FILE }}
          format: cyclonedx-json
          output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
 
       - name: Create SBOM With Path
-        if: "${{ github.event.inputs.PATH != '' }}"
+        if: ${{ inputs.PATH != '' }}
         uses: anchore/sbom-action@v0
         with:
-         path: ${{ github.event.inputs.PATH }}
+         path: ${{ inputs.PATH }}
          format: cyclonedx-json
          output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
 
@@ -98,11 +105,11 @@ jobs:
       - name: Validate SBOM file exists
         id: validate
         run: |
-          if [ ! -f '${{ steps.download-artifact.outputs.grype-output-cdx }}' ]; then
-            echo "::error::SBOM file not found: ${{ steps.download-artifact.outputs.grype-output-cdx }}"
+          if [ ! -f '${{ github.event.repository.name }}-sbom.json' ]; then
+            echo "::error::SBOM file not found: ${{ github.event.repository.name }}-sbom.json"
             exit 1
           fi
-          FILENAME=$(basename '${{ steps.download-artifact.outputs.grype-output-cdx }}')
+          FILENAME=$(basename '${{ github.event.repository.name }}-sbom.json')
           echo "filename=$FILENAME" >> $GITHUB_OUTPUT
           # Default sbom_definition_name to filename without extension
           BASE="${FILENAME%.*}"
@@ -206,13 +213,57 @@ jobs:
           HTTP_CODE=$(echo "$RESP" | tail -n1)
           RESP_BODY=$(echo "$RESP" | sed '$d')
           if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-            echo "::error::Create SBOM definition failed (HTTP $HTTP_CODE): $RESP_BODY"
-            exit 1
-          fi
-          SBOM_DEF_ID=$(echo "$RESP_BODY" | jq -r '.data.sbom_definition_id // .data.id // .sbom_definition_id // .id // empty')
-          if [ -z "$SBOM_DEF_ID" ] || [ "$SBOM_DEF_ID" = "null" ]; then
-            echo "::error::No sbom_definition_id in response: $RESP_BODY"
-            exit 1
+            if [ "$RESP_BODY" = '{"message": "SBOM name already exists; Please use a unique name"}' ]; then
+              echo "SBOM definition with name '$SBOM_NAME' already exists. Attempting to find existing definition."
+              # Try to find existing SBOM definition by name
+              SEARCH_BODY=$(jq -n \
+                --arg tenant_id "$TENANT_ID" \
+                --arg search "$SBOM_NAME" \
+                '{
+                    list_context: {
+                      batch_size: 100,
+                      batch_offset: 0,
+                      total: 0
+                    },
+                    sort: [
+                      {
+                        column: "name",
+                        ascending: true
+                      }
+                    ],
+                    filters: {
+                      tenant_id: $tenant_id,
+                      search: $search
+                    }
+                 }')
+              SEARCH_RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/appsecops/sbom_definition/list" \
+                -H "Content-Type: application/json" \
+                -H "X-Auth-Token: $AUTH_TOKEN" \
+                -d "$SEARCH_BODY")
+              SEARCH_HTTP_CODE=$(echo "$SEARCH_RESP" | tail -n1)
+              SEARCH_RESP_BODY=$(echo "$SEARCH_RESP" | sed '$d')
+              if [ "$SEARCH_HTTP_CODE" -lt 200 ] || [ "$SEARCH_HTTP_CODE" -ge 300 ]; then
+                echo "::error::Failed to find existing SBOM definition (HTTP $SEARCH_HTTP_CODE): $SEARCH_RESP_BODY"
+                exit 1
+              else
+                echo "Search for existing SBOM definition successful: $SEARCH_RESP_BODY"
+              fi
+              SBOM_DEF_ID=$(echo "$SEARCH_RESP_BODY" | jq -r '(.data.results // .results)[0] // empty')
+              if [ -z "$SBOM_DEF_ID" ] || [ "$SBOM_DEF_ID" = "null" ]; then
+                echo "::error::No existing SBOM definition found with name '$SBOM_NAME': $SEARCH_RESP_BODY"
+                exit 1
+              fi
+              echo "Found existing SBOM definition with ID: $SBOM_DEF_ID"
+            else
+              echo "::error::Create SBOM definition failed (HTTP $HTTP_CODE): $RESP_BODY"
+              exit 1
+            fi
+          else
+            SBOM_DEF_ID=$(echo "$RESP_BODY" | jq -r '.data.sbom_definition_id // .data.id // .sbom_definition_id // .id // empty')
+            if [ -z "$SBOM_DEF_ID" ] || [ "$SBOM_DEF_ID" = "null" ]; then
+              echo "::error::No sbom_definition_id in response: $RESP_BODY"
+              exit 1
+            fi
           fi
           echo "sbom_definition_id=$SBOM_DEF_ID" >> $GITHUB_OUTPUT
           echo "SBOM Definition ID: $SBOM_DEF_ID"
@@ -248,7 +299,7 @@ jobs:
           AUTH_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
           ATTACHMENT_ID="${{ steps.attachment.outputs.attachment_id }}"
-          SBOM_FILE="${{ steps.download-artifact.outputs.grype-output-cdx }}"
+          SBOM_FILE="${{ github.event.repository.name }}-sbom.json"
           RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/attachment/item/${ATTACHMENT_ID}/stream" \
             -H "X-Auth-Token: $AUTH_TOKEN" \
             -H "Content-Type: application/json" \
@@ -268,7 +319,7 @@ jobs:
         run: |
           BUILD_ID="${{ inputs.build_id }}"
           if [ -z "$BUILD_ID" ]; then
-            BUILD_ID="${{ github.sha }}"
+            BUILD_ID="${{ github.run_id }}-${{ github.run_attempt }}"
           fi
           FORCE=false
           if [ "${{ inputs.force_upload }}" = "true" ]; then
