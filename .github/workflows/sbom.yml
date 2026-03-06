@@ -372,6 +372,7 @@ jobs:
           fi
           VERSION_ID=$(echo "$RESP_BODY" | jq -r '.data.sbom_version_id // .data.id // .sbom_version_id // .id // empty')
           echo "version_id=$VERSION_ID" >> $GITHUB_OUTPUT
+          echo "build_id=$BUILD_ID" >> $GITHUB_OUTPUT
           echo "SBOM version created: $VERSION_ID"
 
       - name: Summary
@@ -382,5 +383,5 @@ jobs:
             echo "- **SBOM Definition ID:** ${{ steps.sbom_def.outputs.sbom_definition_id }}"
             echo "- **Attachment ID:** ${{ steps.attachment.outputs.attachment_id }}"
             echo "- **SBOM Version ID:** ${{ steps.sbom_version.outputs.version_id }}"
-            echo "- **Build ID:** ${{ inputs.build_id || github.sha }}"
+            echo "- **Build ID:** ${{ steps.sbom_version.outputs.build_id }}"
           } >> $GITHUB_STEP_SUMMARY
