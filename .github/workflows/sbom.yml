@@ -92,6 +92,30 @@ jobs:
             name: grype-output-cdx
             path: ${{ github.event.repository.name }}-sbom.json
             
+      - name: Grype Analysis
+        id: grype-analysis
+        if: ${{ github.ref_name == 'main' }}
+        run: |
+          set +e
+          CRITICAL_CVE=$(cat ${{ github.event.repository.name }}-sbom.json | jq '[.vulnerabilities[]? | select(.ratings[].severity == "critical")] |length')
+          HIGH_CVE=$(cat ${{ github.event.repository.name }}-sbom.json | jq '[.vulnerabilities[]? | select(.ratings[].severity == "high")] |length')
+          MEDIUM_CVE=$(cat ${{ github.event.repository.name }}-sbom.json | jq '[.vulnerabilities[]? | select(.ratings[].severity == "medium")] |length')
+          set -e
+          echo "Criticals=$CRITICAL_CVE" >> $GITHUB_OUTPUT
+          echo "Highs=$HIGH_CVE" >> $GITHUB_OUTPUT
+          echo "Mediums=$MEDIUM_CVE" >> $GITHUB_OUTPUT
+          echo "Grype analysis complete: $CRITICAL_CVE critical, $HIGH_CVE high, $MEDIUM_CVE medium vulnerabilities found."
+
+      - name: Summary
+        run: |
+          {
+            echo "## SBOM Creation and Scan complete"
+            echo "- **SBOM Artifact:** ${{ github.event.repository.name }}-sbom.json"
+            echo "- **Critical Count:** ${{ steps.grype-analysis.outputs.Criticals }}"
+            echo "- **High Count:** ${{ steps.grype-analysis.outputs.Highs }}"
+            echo "- **Medium Count:** ${{ steps.grype-analysis.outputs.Mediums }}"
+          } >> $GITHUB_STEP_SUMMARY
+            
   upload-sbom:
     needs: create_sbom_and_scan
     runs-on: ubuntu-latest
@@ -113,7 +137,8 @@ jobs:
           echo "filename=$FILENAME" >> $GITHUB_OUTPUT
           # Default sbom_definition_name to filename without extension
           BASE="${FILENAME%.*}"
-          echo "sbom_name=${BASE}" >> $GITHUB_OUTPUT
+          echo "sbom_name=${BASE}" >> $GITHUB_OUTPUT          
+          echo "SBOM file validated: $FILENAME"
 
       - name: Get CoreStack auth token
         id: auth
@@ -185,7 +210,7 @@ jobs:
           echo "project_id=$PROJECT_ID" >> $GITHUB_OUTPUT
           echo "Project ID: $PROJECT_ID"
 
-      - name: Create SBOM Definition
+      - name: Create or Find SBOM Definition
         id: sbom_def
         env:
           AUTH_TOKEN: ${{ steps.auth.outputs.token }}
@@ -214,7 +239,6 @@ jobs:
           RESP_BODY=$(echo "$RESP" | sed '$d')
           if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
             if [ "$RESP_BODY" = '{"message": "SBOM name already exists; Please use a unique name"}' ]; then
-              echo "SBOM definition with name '$SBOM_NAME' already exists. Attempting to find existing definition."
               # Try to find existing SBOM definition by name
               SEARCH_BODY=$(jq -n \
                 --arg tenant_id "$TENANT_ID" \
@@ -245,15 +269,12 @@ jobs:
               if [ "$SEARCH_HTTP_CODE" -lt 200 ] || [ "$SEARCH_HTTP_CODE" -ge 300 ]; then
                 echo "::error::Failed to find existing SBOM definition (HTTP $SEARCH_HTTP_CODE): $SEARCH_RESP_BODY"
                 exit 1
-              else
-                echo "Search for existing SBOM definition successful: $SEARCH_RESP_BODY"
               fi
               SBOM_DEF_ID=$(echo "$SEARCH_RESP_BODY" | jq -r '(.data.results // .results)[0] // empty')
               if [ -z "$SBOM_DEF_ID" ] || [ "$SBOM_DEF_ID" = "null" ]; then
                 echo "::error::No existing SBOM definition found with name '$SBOM_NAME': $SEARCH_RESP_BODY"
                 exit 1
               fi
-              echo "Found existing SBOM definition with ID: $SBOM_DEF_ID"
             else
               echo "::error::Create SBOM definition failed (HTTP $HTTP_CODE): $RESP_BODY"
               exit 1
