@@ -94,7 +94,6 @@ jobs:
             
       - name: Grype Analysis
         id: grype-analysis
-        if: ${{ github.ref_name == 'main' }}
         run: |
           set +e
           CRITICAL_CVE=$(cat ${{ github.event.repository.name }}-sbom.json | jq '[.vulnerabilities[]? | select(.ratings[].severity == "critical")] |length')
