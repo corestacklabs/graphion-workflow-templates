@@ -32,7 +32,7 @@ on:
         required: false
         default: ''
       build_id:
-        description: 'Build/version identifier (e.g. 1.0.0 or git SHA) must be unique'
+        description: 'Build/version identifier override (e.g. 1.0.0 or git SHA). If omitted, auto-set to v{next_version} derived from the current release_version_id.'
         type: string
         required: false
         default: ''
@@ -128,11 +128,11 @@ jobs:
       - name: Validate SBOM file exists
         id: validate
         run: |
-          if [ ! -f '${{ github.event.repository.name }}-sbom.json' ]; then
+          if [ ! -f "${{ github.event.repository.name }}-sbom.json" ]; then
             echo "::error::SBOM file not found: ${{ github.event.repository.name }}-sbom.json"
             exit 1
           fi
-          FILENAME=$(basename '${{ github.event.repository.name }}-sbom.json')
+          FILENAME=$(basename "${{ github.event.repository.name }}-sbom.json")
           echo "filename=$FILENAME" >> $GITHUB_OUTPUT
           # Default sbom_definition_name to filename without extension
           BASE="${FILENAME%.*}"
@@ -196,8 +196,8 @@ jobs:
             echo "::error::Get project failed (HTTP $HTTP_CODE): $RESP_BODY"
             exit 1
           fi
-          RESULTS=$(echo "$RESP_BODY" | jq -r '.data.results // .results // empty')
-          if [ -z "$RESULTS" ] || [ "$RESULTS" = "null" ]; then
+          RESULT_COUNT=$(echo "$RESP_BODY" | jq '(.data.results // .results) | length')
+          if [ "$RESULT_COUNT" -eq 0 ]; then
             echo "::error::No project found for project_name: ${{ inputs.project_name }}"
             exit 1
           fi
@@ -219,74 +219,168 @@ jobs:
           if [ -z "$SBOM_NAME" ]; then
             SBOM_NAME="${{ steps.validate.outputs.sbom_name }}"
           fi
-          BODY=$(jq -n \
-            --arg name "$SBOM_NAME" \
+          PROJECT_ID="${{ steps.project.outputs.project_id }}"
+
+          # Step 1: Proactively look up existing SBOM definition by name + project.
+          # This avoids hitting create when a definition (and version) already exist,
+          # which returns "Project is already associated with another SBOM definition".
+          SEARCH_BODY=$(jq -n \
             --arg tenant_id "$TENANT_ID" \
-            --arg project_id "${{ steps.project.outputs.project_id }}" \
+            --arg search "$SBOM_NAME" \
+            --arg project_id "$PROJECT_ID" \
             '{
-              name: $name,
-              description: "SBOM for container image scan",
-              tenant_id: $tenant_id,
-              appsecops_project_id: $project_id,
-              tags: []
+              list_context: { batch_size: 100, batch_offset: 0 },
+              filters: { tenant_id: $tenant_id, search: $search, appsecops_project_id: $project_id }
             }')
-          RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/appsecops/sbom_definition/create" \
+          SEARCH_RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/appsecops/sbom_definition/list" \
             -H "Content-Type: application/json" \
             -H "X-Auth-Token: $AUTH_TOKEN" \
-            -d "$BODY")
-          HTTP_CODE=$(echo "$RESP" | tail -n1)
-          RESP_BODY=$(echo "$RESP" | sed '$d')
-          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-            if [ "$RESP_BODY" = '{"message": "SBOM name already exists; Please use a unique name"}' ]; then
-              # Try to find existing SBOM definition by name
-              SEARCH_BODY=$(jq -n \
-                --arg tenant_id "$TENANT_ID" \
-                --arg search "$SBOM_NAME" \
-                '{
-                    list_context: {
-                      batch_size: 100,
-                      batch_offset: 0,
-                      total: 0
-                    },
-                    sort: [
-                      {
-                        column: "name",
-                        ascending: true
-                      }
-                    ],
-                    filters: {
-                      tenant_id: $tenant_id,
-                      search: $search
-                    }
-                 }')
-              SEARCH_RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/appsecops/sbom_definition/list" \
-                -H "Content-Type: application/json" \
-                -H "X-Auth-Token: $AUTH_TOKEN" \
-                -d "$SEARCH_BODY")
-              SEARCH_HTTP_CODE=$(echo "$SEARCH_RESP" | tail -n1)
-              SEARCH_RESP_BODY=$(echo "$SEARCH_RESP" | sed '$d')
-              if [ "$SEARCH_HTTP_CODE" -lt 200 ] || [ "$SEARCH_HTTP_CODE" -ge 300 ]; then
-                echo "::error::Failed to find existing SBOM definition (HTTP $SEARCH_HTTP_CODE): $SEARCH_RESP_BODY"
-                exit 1
+            -d "$SEARCH_BODY")
+          SEARCH_HTTP_CODE=$(echo "$SEARCH_RESP" | tail -n1)
+          SEARCH_RESP_BODY=$(echo "$SEARCH_RESP" | sed '$d')
+
+          SBOM_DEF_ID=""
+
+          if [ "$SEARCH_HTTP_CODE" -ge 200 ] && [ "$SEARCH_HTTP_CODE" -lt 300 ]; then
+            FIRST=$(echo "$SEARCH_RESP_BODY" | jq -c '(.data.results // .results)[0] // empty')
+            if [ -n "$FIRST" ] && [ "$FIRST" != "null" ]; then
+              FIRST_TYPE=$(echo "$FIRST" | jq -r 'type')
+              if [ "$FIRST_TYPE" = "object" ]; then
+                SBOM_DEF_ID=$(echo "$FIRST" | jq -r '.sbom_definition_id // .id // empty')
+              else
+                SBOM_DEF_ID=$(echo "$FIRST" | jq -r '.')
               fi
-              SBOM_DEF_ID=$(echo "$SEARCH_RESP_BODY" | jq -r '(.data.results // .results)[0] // empty')
-              if [ -z "$SBOM_DEF_ID" ] || [ "$SBOM_DEF_ID" = "null" ]; then
-                echo "::error::No existing SBOM definition found with name '$SBOM_NAME': $SEARCH_RESP_BODY"
+            fi
+          fi
+
+          if [ -n "$SBOM_DEF_ID" ] && [ "$SBOM_DEF_ID" != "null" ]; then
+            echo "Existing SBOM definition found: $SBOM_DEF_ID — skipping create."
+          else
+            # No existing definition found — create a new one.
+            CREATE_BODY=$(jq -n \
+              --arg name "$SBOM_NAME" \
+              --arg tenant_id "$TENANT_ID" \
+              --arg project_id "$PROJECT_ID" \
+              '{
+                name: $name,
+                description: "SBOM for container image scan",
+                tenant_id: $tenant_id,
+                appsecops_project_id: $project_id,
+                tags: []
+              }')
+            RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/appsecops/sbom_definition/create" \
+              -H "Content-Type: application/json" \
+              -H "X-Auth-Token: $AUTH_TOKEN" \
+              -d "$CREATE_BODY")
+            HTTP_CODE=$(echo "$RESP" | tail -n1)
+            RESP_BODY=$(echo "$RESP" | sed '$d')
+
+            if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+              # Fallback — create failed with a known "already exists/associated" error.
+              # Handles both:
+              #   "SBOM name already exists; Please use a unique name"
+              #   "Project is already associated with another SBOM definition"
+              ERROR_MSG=$(echo "$RESP_BODY" | jq -r '.message // empty')
+              if echo "$ERROR_MSG" | grep -qiE "already exists|already associated"; then
+                echo "::warning::Create returned '$ERROR_MSG' — searching for existing definition by project_id."
+                FALLBACK_BODY=$(jq -n \
+                  --arg tenant_id "$TENANT_ID" \
+                  --arg project_id "$PROJECT_ID" \
+                  '{
+                    list_context: { batch_size: 100, batch_offset: 0 },
+                    filters: { tenant_id: $tenant_id, appsecops_project_id: $project_id }
+                  }')
+                FB_RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/appsecops/sbom_definition/list" \
+                  -H "Content-Type: application/json" \
+                  -H "X-Auth-Token: $AUTH_TOKEN" \
+                  -d "$FALLBACK_BODY")
+                FB_HTTP_CODE=$(echo "$FB_RESP" | tail -n1)
+                FB_RESP_BODY=$(echo "$FB_RESP" | sed '$d')
+                if [ "$FB_HTTP_CODE" -lt 200 ] || [ "$FB_HTTP_CODE" -ge 300 ]; then
+                  echo "::error::Fallback search for SBOM definition failed (HTTP $FB_HTTP_CODE): $FB_RESP_BODY"
+                  exit 1
+                fi
+                FB_FIRST=$(echo "$FB_RESP_BODY" | jq -c '(.data.results // .results)[0] // empty')
+                if [ -z "$FB_FIRST" ] || [ "$FB_FIRST" = "null" ]; then
+                  echo "::error::No existing SBOM definition found for project '$PROJECT_ID': $FB_RESP_BODY"
+                  exit 1
+                fi
+                FB_TYPE=$(echo "$FB_FIRST" | jq -r 'type')
+                if [ "$FB_TYPE" = "object" ]; then
+                  SBOM_DEF_ID=$(echo "$FB_FIRST" | jq -r '.sbom_definition_id // .id // empty')
+                else
+                  SBOM_DEF_ID=$(echo "$FB_FIRST" | jq -r '.')
+                fi
+                if [ -z "$SBOM_DEF_ID" ] || [ "$SBOM_DEF_ID" = "null" ]; then
+                  echo "::error::Fallback result had no valid ID for project '$PROJECT_ID': $FB_RESP_BODY"
+                  exit 1
+                fi
+                echo "Found existing SBOM definition via fallback: $SBOM_DEF_ID"
+              else
+                echo "::error::Create SBOM definition failed (HTTP $HTTP_CODE): $RESP_BODY"
                 exit 1
               fi
             else
-              echo "::error::Create SBOM definition failed (HTTP $HTTP_CODE): $RESP_BODY"
-              exit 1
-            fi
-          else
-            SBOM_DEF_ID=$(echo "$RESP_BODY" | jq -r '.data.sbom_definition_id // .data.id // .sbom_definition_id // .id // empty')
-            if [ -z "$SBOM_DEF_ID" ] || [ "$SBOM_DEF_ID" = "null" ]; then
-              echo "::error::No sbom_definition_id in response: $RESP_BODY"
-              exit 1
+              SBOM_DEF_ID=$(echo "$RESP_BODY" | jq -r '.data.sbom_definition_id // .data.id // .sbom_definition_id // .id // empty')
+              if [ -z "$SBOM_DEF_ID" ] || [ "$SBOM_DEF_ID" = "null" ]; then
+                echo "::error::No sbom_definition_id in create response: $RESP_BODY"
+                exit 1
+              fi
+              echo "Created new SBOM definition: $SBOM_DEF_ID"
             fi
           fi
+
           echo "sbom_definition_id=$SBOM_DEF_ID" >> $GITHUB_OUTPUT
           echo "SBOM Definition ID: $SBOM_DEF_ID"
+
+      - name: Get current SBOM version number
+        id: get_version
+        env:
+          AUTH_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          SBOM_DEF_ID="${{ steps.sbom_def.outputs.sbom_definition_id }}"
+
+          # Step 1: GET definition item → extract release_version_id (ID of the latest uploaded version).
+          DEF_RESP=$(curl -s -w "\n%{http_code}" -X GET "${{ env.API_BASE }}/v1/appsecops/sbom_definition/item/${SBOM_DEF_ID}" \
+            -H "Content-Type: application/json" \
+            -H "X-Auth-Token: $AUTH_TOKEN")
+          DEF_HTTP_CODE=$(echo "$DEF_RESP" | tail -n1)
+          DEF_BODY=$(echo "$DEF_RESP" | sed '$d')
+
+          RELEASE_VERSION_ID=""
+          # version_number always starts at 1, so default to 0 only when no versions exist yet.
+          CURRENT_VERSION_NUM=0
+
+          if [ "$DEF_HTTP_CODE" -ge 200 ] && [ "$DEF_HTTP_CODE" -lt 300 ]; then
+            RELEASE_VERSION_ID=$(echo "$DEF_BODY" | jq -r '.release_version_id // .data.release_version_id // empty')
+          else
+            echo "::warning::Could not fetch definition item (HTTP $DEF_HTTP_CODE) — assuming no existing versions."
+          fi
+
+          if [ -n "$RELEASE_VERSION_ID" ] && [ "$RELEASE_VERSION_ID" != "null" ]; then
+            # Step 2: GET version item → read version_number (always >= 1).
+            VER_RESP=$(curl -s -w "\n%{http_code}" -X GET "${{ env.API_BASE }}/v1/appsecops/sbom_version/item/${RELEASE_VERSION_ID}" \
+              -H "Content-Type: application/json" \
+              -H "X-Auth-Token: $AUTH_TOKEN")
+            VER_HTTP_CODE=$(echo "$VER_RESP" | tail -n1)
+            VER_BODY=$(echo "$VER_RESP" | sed '$d')
+            if [ "$VER_HTTP_CODE" -ge 200 ] && [ "$VER_HTTP_CODE" -lt 300 ]; then
+              CURRENT_VERSION_NUM=$(echo "$VER_BODY" | jq -r '.version_number // .data.version_number // 1')
+            else
+              # release_version_id exists so at least 1 version is present — default to 1.
+              echo "::warning::Could not fetch version item (HTTP $VER_HTTP_CODE) — release_version_id is set, defaulting to version 1."
+              CURRENT_VERSION_NUM=1
+            fi
+            echo "Latest release: version_id=$RELEASE_VERSION_ID version_number=$CURRENT_VERSION_NUM"
+          else
+            echo "No existing SBOM versions — this upload will be version 1."
+          fi
+
+          NEXT_VERSION=$((CURRENT_VERSION_NUM + 1))
+          echo "release_version_id=$RELEASE_VERSION_ID" >> $GITHUB_OUTPUT
+          echo "current_version_num=$CURRENT_VERSION_NUM" >> $GITHUB_OUTPUT
+          echo "next_version=$NEXT_VERSION" >> $GITHUB_OUTPUT
+          echo "Current version: $CURRENT_VERSION_NUM → next version: $NEXT_VERSION"
 
       - name: Create attachment
         id: attachment
@@ -339,7 +433,9 @@ jobs:
         run: |
           BUILD_ID="${{ inputs.build_id }}"
           if [ -z "$BUILD_ID" ]; then
-            BUILD_ID="${{ github.run_id }}-${{ github.run_attempt }}"
+            # version_number always starts at 1 and increments, so v{next_version} is
+            # already a unique build identifier per definition.
+            BUILD_ID="v${{ steps.get_version.outputs.next_version }}"
           fi
           FORCE=false
           if [ "${{ inputs.force_upload }}" = "true" ]; then
@@ -371,9 +467,11 @@ jobs:
             exit 1
           fi
           VERSION_ID=$(echo "$RESP_BODY" | jq -r '.data.sbom_version_id // .data.id // .sbom_version_id // .id // empty')
+          VERSION_NUMBER=$(echo "$RESP_BODY" | jq -r '.data.version_number // .version_number // empty')
           echo "version_id=$VERSION_ID" >> $GITHUB_OUTPUT
+          echo "version_number=$VERSION_NUMBER" >> $GITHUB_OUTPUT
           echo "build_id=$BUILD_ID" >> $GITHUB_OUTPUT
-          echo "SBOM version created: $VERSION_ID"
+          echo "SBOM version $VERSION_NUMBER created (ID: $VERSION_ID, build_id: $BUILD_ID)"
 
       - name: Summary
         run: |
@@ -381,7 +479,13 @@ jobs:
             echo "## SBOM upload complete"
             echo "- **Project ID:** ${{ steps.project.outputs.project_id }}"
             echo "- **SBOM Definition ID:** ${{ steps.sbom_def.outputs.sbom_definition_id }}"
-            echo "- **Attachment ID:** ${{ steps.attachment.outputs.attachment_id }}"
+            PREV_REL="${{ steps.get_version.outputs.release_version_id }}"
+            if [ -z "$PREV_REL" ]; then
+              echo "- **Previous Version:** None (first upload)"
+            else
+              echo "- **Previous Version:** ${{ steps.get_version.outputs.current_version_num }} (release_version_id: $PREV_REL)"
+            fi
+            echo "- **Uploaded as Version:** ${{ steps.sbom_version.outputs.version_number }}"
             echo "- **SBOM Version ID:** ${{ steps.sbom_version.outputs.version_id }}"
             echo "- **Build ID:** ${{ steps.sbom_version.outputs.build_id }}"
           } >> $GITHUB_STEP_SUMMARY
