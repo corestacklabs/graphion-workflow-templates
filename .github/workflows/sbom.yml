@@ -32,7 +32,7 @@ on:
         required: false
         default: ''
       build_id:
-        description: 'Build/version identifier override (e.g. 1.0.0 or git SHA). If omitted, auto-set to v{next_version} derived from the current release_version_id.'
+        description: 'Build/version identifier override. Alphanumeric + spaces only, 3-50 chars (e.g. "myapp v2" or "build 42"). If omitted, auto-set to "build {next_version}".'
         type: string
         required: false
         default: ''
@@ -433,10 +433,21 @@ jobs:
         run: |
           BUILD_ID="${{ inputs.build_id }}"
           if [ -z "$BUILD_ID" ]; then
-            # version_number always starts at 1 and increments, so v{next_version} is
-            # already a unique build identifier per definition.
-            BUILD_ID="v${{ steps.get_version.outputs.next_version }}"
+            # "build N" is always 7+ chars, alphanumeric + space — satisfies the API rule:
+            # alphanumeric + spaces, length 3-50.
+            BUILD_ID="build ${{ steps.get_version.outputs.next_version }}"
+          else
+            # Sanitize user-provided value: strip anything that is not alphanumeric or space,
+            # then trim to 50 chars. The API rejects dots, hyphens, underscores, etc.
+            BUILD_ID=$(echo "$BUILD_ID" | tr -cd '[:alnum:] ' | cut -c1-50)
+            BUILD_ID=$(echo "$BUILD_ID" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            if [ ${#BUILD_ID} -lt 3 ]; then
+              echo "::warning::Sanitized build_id '$BUILD_ID' is shorter than 3 chars — appending version number."
+              BUILD_ID="$BUILD_ID ${{ steps.get_version.outputs.next_version }}"
+              BUILD_ID=$(echo "$BUILD_ID" | sed 's/^[[:space:]]*//')
+            fi
           fi
+          echo "Using build_id: $BUILD_ID"
           FORCE=false
           if [ "${{ inputs.force_upload }}" = "true" ]; then
             FORCE=true
