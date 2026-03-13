@@ -384,14 +384,13 @@ jobs:
           echo "current_build_id=$CURRENT_BUILD_ID" >> $GITHUB_OUTPUT
           echo "next_version=$NEXT_VERSION" >> $GITHUB_OUTPUT
           echo "Current version: $CURRENT_VERSION_NUM → next version: $NEXT_VERSION"
+          echo "Current build id: $CURRENT_BUILD_ID"
         
       - name: Format build number
         id: format_build_number
         run: |          
           BUILD_ID="${{ inputs.build_id }}"
           NEXT_VERSION="${{ steps.get_version.outputs.next_version }}"
-          BUILD_ID=""
-          NEXT_VERSION="1"
           if [ -z "$BUILD_ID" ]; then
             # pull from previous version
             BUILD_ID="${{ steps.get_version.outputs.build_id }}"
