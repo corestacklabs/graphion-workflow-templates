@@ -1,0 +1,529 @@
+name: Create, Scan, and Upload SBOM to CoreStack AppSecOps
+
+on:
+  workflow_call:
+    secrets:
+      CORESTACK_ACCESS_KEY:
+        description: "API Access key from a CoreStack user"
+        required: true
+      CORESTACK_SECRET_KEY:
+        description: "API Secret key from a CoreStack user"
+        required: true
+    inputs:
+      FILE:
+        description: 'Path to input file for SBOM generation (e.g. Dockerfile or binary) - mutually exclusive with IMAGE and PATH'
+        required: false
+        type: string
+      PATH:
+        description: 'Path to directory for SBOM generation'
+        required: false
+        type: string
+      IMAGE:
+        description: 'Container image reference (e.g. myregistry/myapp:1.0)'
+        required: false
+        type: string
+      project_name:
+        description: 'AppSecOps project name (e.g. Payment Service) - used to resolve project_id'
+        type: string
+        required: true
+      sbom_definition_name:
+        description: 'Name for the SBOM definition (defaults to filename without extension)'
+        type: string
+        required: false
+        default: ''
+      build_id:
+        description: 'Build/version identifier override. Alphanumeric + spaces only, 3-50 chars (e.g. "myapp v2" or "build 42"). If omitted, auto-set to "build {next_version}".'
+        type: string
+        required: false
+        default: ''
+      api_base_url:
+        description: 'CoreStack API base URL'
+        type: string
+        required: false
+        default: 'https://api.corestack.io'
+      force_upload:
+        description: 'Allow upload if same content exists elsewhere (true/false)'
+        type: string
+        required: false
+        default: 'false'
+
+env:
+  API_BASE: ${{ inputs.api_base_url || 'https://api.corestack.io' }}
+      
+jobs:  
+  create_sbom_and_scan:
+    runs-on: ubuntu-latest
+    steps:          
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Create SBOM With Image
+        if: ${{ inputs.IMAGE != '' }}
+        uses: anchore/sbom-action@v0
+        with:
+         image: ${{ inputs.IMAGE }}
+         format: cyclonedx-json
+         output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
+
+      - name: Create SBOM With File
+        if: ${{ inputs.FILE != '' }}
+        uses: anchore/sbom-action@v0
+        with:
+         file: ${{ inputs.FILE }}
+         format: cyclonedx-json
+         output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
+
+      - name: Create SBOM With Path
+        if: ${{ inputs.PATH != '' }}
+        uses: anchore/sbom-action@v0
+        with:
+         path: ${{ inputs.PATH }}
+         format: cyclonedx-json
+         output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
+
+      - name: Run Grype Scan
+        run: |
+            curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+            grype sbom:"${{ github.event.repository.name }}-sbom.cdx.json" -o cyclonedx-json > ${{ github.event.repository.name }}-sbom.json
+
+      - name: Upload Grype Artifact
+        uses: actions/upload-artifact@v4
+        with:
+            name: grype-output-cdx
+            path: ${{ github.event.repository.name }}-sbom.json
+            
+      - name: Grype Analysis
+        id: grype-analysis
+        run: |
+          set +e
+          CRITICAL_CVE=$(cat ${{ github.event.repository.name }}-sbom.json | jq '[.vulnerabilities[]? | select(.ratings[].severity == "critical")] |length')
+          HIGH_CVE=$(cat ${{ github.event.repository.name }}-sbom.json | jq '[.vulnerabilities[]? | select(.ratings[].severity == "high")] |length')
+          MEDIUM_CVE=$(cat ${{ github.event.repository.name }}-sbom.json | jq '[.vulnerabilities[]? | select(.ratings[].severity == "medium")] |length')
+          set -e
+          echo "Criticals=$CRITICAL_CVE" >> $GITHUB_OUTPUT
+          echo "Highs=$HIGH_CVE" >> $GITHUB_OUTPUT
+          echo "Mediums=$MEDIUM_CVE" >> $GITHUB_OUTPUT
+          echo "Grype analysis complete: $CRITICAL_CVE critical, $HIGH_CVE high, $MEDIUM_CVE medium vulnerabilities found."
+
+      - name: Summary
+        run: |
+          {
+            echo "## SBOM Creation and Scan complete"
+            echo "- **SBOM Artifact:** ${{ github.event.repository.name }}-sbom.json"
+            echo "- **Critical Count:** ${{ steps.grype-analysis.outputs.Criticals }}"
+            echo "- **High Count:** ${{ steps.grype-analysis.outputs.Highs }}"
+            echo "- **Medium Count:** ${{ steps.grype-analysis.outputs.Mediums }}"
+          } >> $GITHUB_STEP_SUMMARY
+            
+  upload-sbom:
+    needs: create_sbom_and_scan
+    runs-on: ubuntu-latest
+    steps:      
+      - name: Download Artifact
+        id: download-artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: grype-output-cdx
+
+      - name: Validate SBOM file exists
+        id: validate
+        run: |
+          if [ ! -f "${{ github.event.repository.name }}-sbom.json" ]; then
+            echo "::error::SBOM file not found: ${{ github.event.repository.name }}-sbom.json"
+            exit 1
+          fi
+          FILENAME=$(basename "${{ github.event.repository.name }}-sbom.json")
+          echo "filename=$FILENAME" >> $GITHUB_OUTPUT
+          # Default sbom_definition_name to filename without extension
+          BASE="${FILENAME%.*}"
+          echo "sbom_name=${BASE}" >> $GITHUB_OUTPUT          
+          echo "SBOM file validated: $FILENAME"
+
+      - name: Get CoreStack auth token
+        id: auth
+        env:
+          ACCESS_KEY: ${{ secrets.CORESTACK_ACCESS_KEY }}
+          SECRET_KEY: ${{ secrets.CORESTACK_SECRET_KEY }}
+        run: |
+          if [ -z "$ACCESS_KEY" ] || [ -z "$SECRET_KEY" ]; then
+            echo "::error::Secrets CORESTACK_ACCESS_KEY and CORESTACK_SECRET_KEY must be set."
+            exit 1
+          fi
+          RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/auth/tokens" \
+            -H "Content-Type: application/json" \
+            -d "{\"access_key\":\"$ACCESS_KEY\",\"secret_key\":\"$SECRET_KEY\"}")
+          HTTP_CODE=$(echo "$RESP" | tail -n1)
+          BODY=$(echo "$RESP" | sed '$d')
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::Auth failed (HTTP $HTTP_CODE): $BODY"
+            exit 1
+          fi
+          # Postman: token.access_token, user.active_tenant_id
+          TOKEN=$(echo "$BODY" | jq -r '.token.access_token // .data.token.access_token // .data.key // .key // .access_token // empty')
+          TENANT_ID=$(echo "$BODY" | jq -r '.user.active_tenant_id // .data.user.active_tenant_id // empty')
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "::error::No token in response: $BODY"
+            exit 1
+          fi
+          if [ -z "$TENANT_ID" ] || [ "$TENANT_ID" = "null" ]; then
+            echo "::error::No tenant_id in response: $BODY"
+            exit 1
+          fi
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+          echo "tenant_id=$TENANT_ID" >> $GITHUB_OUTPUT
+          echo "Auth token and tenant_id obtained successfully."
+
+      - name: Get Project ID by Name
+        id: project
+        env:
+          AUTH_TOKEN: ${{ steps.auth.outputs.token }}
+          TENANT_ID: ${{ steps.auth.outputs.tenant_id }}
+        run: |
+          BODY=$(jq -n \
+            --arg tenant_id "$TENANT_ID" \
+            --arg project_name "${{ inputs.project_name }}" \
+            '{
+              filters: { tenant_id: $tenant_id, name: [$project_name], search: $project_name },
+              list_context: { batch_size: 10, batch_offset: 0 }
+            }')
+          RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/appsecops/projects/list" \
+            -H "Content-Type: application/json" \
+            -H "X-Auth-Token: $AUTH_TOKEN" \
+            -d "$BODY")
+          HTTP_CODE=$(echo "$RESP" | tail -n1)
+          RESP_BODY=$(echo "$RESP" | sed '$d')
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::Get project failed (HTTP $HTTP_CODE): $RESP_BODY"
+            exit 1
+          fi
+          RESULT_COUNT=$(echo "$RESP_BODY" | jq '(.data.results // .results) | length')
+          if [ "$RESULT_COUNT" -eq 0 ]; then
+            echo "::error::No project found for project_name: ${{ inputs.project_name }}"
+            exit 1
+          fi
+          PROJECT_ID=$(echo "$RESP_BODY" | jq -r '(.data.results // .results)[0] // empty')
+          if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "null" ]; then
+            echo "::error::No project ID in results: $RESP_BODY"
+            exit 1
+          fi
+          echo "project_id=$PROJECT_ID" >> $GITHUB_OUTPUT
+          echo "Project ID: $PROJECT_ID"
+
+      - name: Create or Find SBOM Definition
+        id: sbom_def
+        env:
+          AUTH_TOKEN: ${{ steps.auth.outputs.token }}
+          TENANT_ID: ${{ steps.auth.outputs.tenant_id }}
+        run: |
+          SBOM_NAME="${{ inputs.sbom_definition_name }}"
+          if [ -z "$SBOM_NAME" ]; then
+            SBOM_NAME="${{ steps.validate.outputs.sbom_name }}"
+          fi
+          PROJECT_ID="${{ steps.project.outputs.project_id }}"
+
+          # Step 1: Proactively look up existing SBOM definition by name + project.
+          # This avoids hitting create when a definition (and version) already exist,
+          # which returns "Project is already associated with another SBOM definition".
+          SEARCH_BODY=$(jq -n \
+            --arg tenant_id "$TENANT_ID" \
+            --arg search "$SBOM_NAME" \
+            --arg project_id "$PROJECT_ID" \
+            '{
+              list_context: { batch_size: 100, batch_offset: 0 },
+              filters: { tenant_id: $tenant_id, search: $search, appsecops_project_id: $project_id }
+            }')
+          SEARCH_RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/appsecops/sbom_definition/list" \
+            -H "Content-Type: application/json" \
+            -H "X-Auth-Token: $AUTH_TOKEN" \
+            -d "$SEARCH_BODY")
+          SEARCH_HTTP_CODE=$(echo "$SEARCH_RESP" | tail -n1)
+          SEARCH_RESP_BODY=$(echo "$SEARCH_RESP" | sed '$d')
+
+          SBOM_DEF_ID=""
+
+          if [ "$SEARCH_HTTP_CODE" -ge 200 ] && [ "$SEARCH_HTTP_CODE" -lt 300 ]; then
+            FIRST=$(echo "$SEARCH_RESP_BODY" | jq -c '(.data.results // .results)[0] // empty')
+            if [ -n "$FIRST" ] && [ "$FIRST" != "null" ]; then
+              FIRST_TYPE=$(echo "$FIRST" | jq -r 'type')
+              if [ "$FIRST_TYPE" = "object" ]; then
+                SBOM_DEF_ID=$(echo "$FIRST" | jq -r '.sbom_definition_id // .id // empty')
+              else
+                SBOM_DEF_ID=$(echo "$FIRST" | jq -r '.')
+              fi
+            fi
+          fi
+
+          if [ -n "$SBOM_DEF_ID" ] && [ "$SBOM_DEF_ID" != "null" ]; then
+            echo "Existing SBOM definition found: $SBOM_DEF_ID — skipping create."
+          else
+            # No existing definition found — create a new one.
+            CREATE_BODY=$(jq -n \
+              --arg name "$SBOM_NAME" \
+              --arg tenant_id "$TENANT_ID" \
+              --arg project_id "$PROJECT_ID" \
+              '{
+                name: $name,
+                description: "SBOM for container image scan",
+                tenant_id: $tenant_id,
+                appsecops_project_id: $project_id,
+                tags: []
+              }')
+            RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/appsecops/sbom_definition/create" \
+              -H "Content-Type: application/json" \
+              -H "X-Auth-Token: $AUTH_TOKEN" \
+              -d "$CREATE_BODY")
+            HTTP_CODE=$(echo "$RESP" | tail -n1)
+            RESP_BODY=$(echo "$RESP" | sed '$d')
+
+            if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+              # Fallback — create failed with a known "already exists/associated" error.
+              # Handles both:
+              #   "SBOM name already exists; Please use a unique name"
+              #   "Project is already associated with another SBOM definition"
+              ERROR_MSG=$(echo "$RESP_BODY" | jq -r '.message // empty')
+              if echo "$ERROR_MSG" | grep -qiE "already exists|already associated"; then
+                echo "::warning::Create returned '$ERROR_MSG' — searching for existing definition by project_id."
+                FALLBACK_BODY=$(jq -n \
+                  --arg tenant_id "$TENANT_ID" \
+                  --arg project_id "$PROJECT_ID" \
+                  '{
+                    list_context: { batch_size: 100, batch_offset: 0 },
+                    filters: { tenant_id: $tenant_id, appsecops_project_id: $project_id }
+                  }')
+                FB_RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/appsecops/sbom_definition/list" \
+                  -H "Content-Type: application/json" \
+                  -H "X-Auth-Token: $AUTH_TOKEN" \
+                  -d "$FALLBACK_BODY")
+                FB_HTTP_CODE=$(echo "$FB_RESP" | tail -n1)
+                FB_RESP_BODY=$(echo "$FB_RESP" | sed '$d')
+                if [ "$FB_HTTP_CODE" -lt 200 ] || [ "$FB_HTTP_CODE" -ge 300 ]; then
+                  echo "::error::Fallback search for SBOM definition failed (HTTP $FB_HTTP_CODE): $FB_RESP_BODY"
+                  exit 1
+                fi
+                FB_FIRST=$(echo "$FB_RESP_BODY" | jq -c '(.data.results // .results)[0] // empty')
+                if [ -z "$FB_FIRST" ] || [ "$FB_FIRST" = "null" ]; then
+                  echo "::error::No existing SBOM definition found for project '$PROJECT_ID': $FB_RESP_BODY"
+                  exit 1
+                fi
+                FB_TYPE=$(echo "$FB_FIRST" | jq -r 'type')
+                if [ "$FB_TYPE" = "object" ]; then
+                  SBOM_DEF_ID=$(echo "$FB_FIRST" | jq -r '.sbom_definition_id // .id // empty')
+                else
+                  SBOM_DEF_ID=$(echo "$FB_FIRST" | jq -r '.')
+                fi
+                if [ -z "$SBOM_DEF_ID" ] || [ "$SBOM_DEF_ID" = "null" ]; then
+                  echo "::error::Fallback result had no valid ID for project '$PROJECT_ID': $FB_RESP_BODY"
+                  exit 1
+                fi
+                echo "Found existing SBOM definition via fallback: $SBOM_DEF_ID"
+              else
+                echo "::error::Create SBOM definition failed (HTTP $HTTP_CODE): $RESP_BODY"
+                exit 1
+              fi
+            else
+              SBOM_DEF_ID=$(echo "$RESP_BODY" | jq -r '.data.sbom_definition_id // .data.id // .sbom_definition_id // .id // empty')
+              if [ -z "$SBOM_DEF_ID" ] || [ "$SBOM_DEF_ID" = "null" ]; then
+                echo "::error::No sbom_definition_id in create response: $RESP_BODY"
+                exit 1
+              fi
+              echo "Created new SBOM definition: $SBOM_DEF_ID"
+            fi
+          fi
+
+          echo "sbom_definition_id=$SBOM_DEF_ID" >> $GITHUB_OUTPUT
+          echo "SBOM Definition ID: $SBOM_DEF_ID"
+
+      - name: Get current SBOM version number
+        id: get_version
+        env:
+          AUTH_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          SBOM_DEF_ID="${{ steps.sbom_def.outputs.sbom_definition_id }}"
+
+          # Step 1: GET definition item → extract release_version_id (ID of the latest uploaded version).
+          DEF_RESP=$(curl -s -w "\n%{http_code}" -X GET "${{ env.API_BASE }}/v1/appsecops/sbom_definition/item/${SBOM_DEF_ID}" \
+            -H "Content-Type: application/json" \
+            -H "X-Auth-Token: $AUTH_TOKEN")
+          DEF_HTTP_CODE=$(echo "$DEF_RESP" | tail -n1)
+          DEF_BODY=$(echo "$DEF_RESP" | sed '$d')
+
+          RELEASE_VERSION_ID=""
+          # version_number always starts at 1, so default to 0 only when no versions exist yet.
+          CURRENT_VERSION_NUM=0
+
+          if [ "$DEF_HTTP_CODE" -ge 200 ] && [ "$DEF_HTTP_CODE" -lt 300 ]; then
+            RELEASE_VERSION_ID=$(echo "$DEF_BODY" | jq -r '.release_version_id // .data.release_version_id // empty')
+          else
+            echo "::warning::Could not fetch definition item (HTTP $DEF_HTTP_CODE) — assuming no existing versions."
+          fi
+
+          if [ -n "$RELEASE_VERSION_ID" ] && [ "$RELEASE_VERSION_ID" != "null" ]; then
+            # Step 2: GET version item → read version_number (always >= 1).
+            VER_RESP=$(curl -s -w "\n%{http_code}" -X GET "${{ env.API_BASE }}/v1/appsecops/sbom_version/item/${RELEASE_VERSION_ID}" \
+              -H "Content-Type: application/json" \
+              -H "X-Auth-Token: $AUTH_TOKEN")
+            VER_HTTP_CODE=$(echo "$VER_RESP" | tail -n1)
+            VER_BODY=$(echo "$VER_RESP" | sed '$d')
+            if [ "$VER_HTTP_CODE" -ge 200 ] && [ "$VER_HTTP_CODE" -lt 300 ]; then
+              CURRENT_VERSION_NUM=$(echo "$VER_BODY" | jq -r '.version_number // .data.version_number // 1')
+              CURRENT_BUILD_ID=$(echo "$VER_BODY" | jq -r '.build_id // .data.build_id // 1')
+            else
+              # release_version_id exists so at least 1 version is present — default to 1.
+              echo "::warning::Could not fetch version item (HTTP $VER_HTTP_CODE) — release_version_id is set, defaulting to version 1."
+              CURRENT_VERSION_NUM=1
+              CURRENT_BUILD_ID="1"
+            fi
+            echo "Latest release: version_id=$RELEASE_VERSION_ID version_number=$CURRENT_VERSION_NUM"
+          else
+            echo "No existing SBOM versions — this upload will be version 1."
+          fi
+
+          NEXT_VERSION=$((CURRENT_VERSION_NUM + 1))
+          echo "release_version_id=$RELEASE_VERSION_ID" >> $GITHUB_OUTPUT
+          echo "current_version_num=$CURRENT_VERSION_NUM" >> $GITHUB_OUTPUT
+          echo "current_build_id=$CURRENT_BUILD_ID" >> $GITHUB_OUTPUT
+          echo "next_version=$NEXT_VERSION" >> $GITHUB_OUTPUT
+          echo "Current version: $CURRENT_VERSION_NUM → next version: $NEXT_VERSION"
+        
+      - name: Format build number
+        id: format_build_number
+        run: |          
+          BUILD_ID="${{ inputs.build_id }}"
+          NEXT_VERSION="${{ steps.get_version.outputs.next_version }}"
+          BUILD_ID=""
+          NEXT_VERSION="1"
+          if [ -z "$BUILD_ID" ]; then
+            # pull from previous version
+            BUILD_ID="${{ steps.get_version.outputs.build_id }}"
+            # If the current build ID is the default "1"
+            if [ "$BUILD_ID" = "1" ]; then
+              BUILD_ID='1.0.0'
+            fi
+          fi
+          # strip "build ", extra spaces, and special characters except . and - which are common in version numbers (e.g. 1.0.0, 2.1.3-beta)
+          FORMATTED_BUILD_ID=$(echo "$BUILD_ID" | sed 's/^build[[:space:]]*//I' | tr -s ' ' \
+          | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr -cd '[:alnum:]+-. ' | cut -c1-50)
+          # if length is less than 3 chars, append ".0.${NEXT_VERSION}" to meet API requirement of at least 3 chars
+          if [ ${#FORMATTED_BUILD_ID} -lt 3 ]; then
+            FORMATTED_BUILD_ID="${FORMATTED_BUILD_ID}.0.${NEXT_VERSION}"
+          else
+            # if the last character is a number, increase it by 1
+            if [[ "${FORMATTED_BUILD_ID}" =~ [0-9]$ ]]; then
+              LAST_CHAR=$(echo "$FORMATTED_BUILD_ID" | grep -oE '[0-9]$')
+              PREFIX=$(echo "$FORMATTED_BUILD_ID" | sed 's/[0-9]$//')
+              INCREMENTED=$((LAST_CHAR + 1))
+              FORMATTED_BUILD_ID="${PREFIX}${INCREMENTED}"
+            else
+              # if the last character is not a number, find the first number from the right and increment it, otherwise append NEXT_VERSION
+              LAST_NUMBER=$(echo "$FORMATTED_BUILD_ID" | grep -oE '[0-9]' | tail -1)
+              if [ -n "$LAST_NUMBER" ]; then
+                FORMATTED_BUILD_ID=$(echo "$FORMATTED_BUILD_ID" | sed "s/\(.*\\)$LAST_NUMBER/\\1$((LAST_NUMBER + 1))/")
+              else
+                FORMATTED_BUILD_ID="${FORMATTED_BUILD_ID}.${NEXT_VERSION}"
+              fi
+            fi
+          fi
+          # Output the formatted buid id to be used in subsequent steps
+          echo "formatted_build_id=$FORMATTED_BUILD_ID" >> $GITHUB_OUTPUT
+          echo "Build ID formatted: $FORMATTED_BUILD_ID"
+
+      - name: Create attachment
+        id: attachment
+        env:
+          AUTH_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          FILENAME="${{ steps.validate.outputs.filename }}"
+          # Postman: name and file_name; response.id
+          RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/attachment/create" \
+            -H "Content-Type: application/json" \
+            -H "X-Auth-Token: $AUTH_TOKEN" \
+            -d "{\"name\":\"$FILENAME\",\"file_name\":\"$FILENAME\"}")
+          HTTP_CODE=$(echo "$RESP" | tail -n1)
+          BODY=$(echo "$RESP" | sed '$d')
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::Create attachment failed (HTTP $HTTP_CODE): $BODY"
+            exit 1
+          fi
+          ATTACHMENT_ID=$(echo "$BODY" | jq -r '.id // .data.id // empty')
+          if [ -z "$ATTACHMENT_ID" ] || [ "$ATTACHMENT_ID" = "null" ]; then
+            echo "::error::No attachment id in response: $BODY"
+            exit 1
+          fi
+          echo "attachment_id=$ATTACHMENT_ID" >> $GITHUB_OUTPUT
+          echo "Attachment created: $ATTACHMENT_ID"
+
+      - name: Upload SBOM file to attachment stream
+        id: upload
+        env:
+          AUTH_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          ATTACHMENT_ID="${{ steps.attachment.outputs.attachment_id }}"
+          SBOM_FILE="${{ github.event.repository.name }}-sbom.json"
+          RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/attachment/item/${ATTACHMENT_ID}/stream" \
+            -H "X-Auth-Token: $AUTH_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data-binary "@${SBOM_FILE}")
+          HTTP_CODE=$(echo "$RESP" | tail -n1)
+          BODY=$(echo "$RESP" | sed '$d')
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::Upload failed (HTTP $HTTP_CODE): $BODY"
+            exit 1
+          fi
+          echo "SBOM file uploaded successfully."
+
+      - name: Upload SBOM Version
+        id: sbom_version
+        env:
+          AUTH_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          FORCE=false
+          if [ "${{ inputs.force_upload }}" = "true" ]; then
+            FORCE=true
+          fi
+          # Postman: sbom_file_format with __type AppSecopsSbomVersionFileFormatForCycloneDX, version 1.6
+          BODY=$(jq -n \
+            --arg tenant_id "${{ steps.auth.outputs.tenant_id }}" \
+            --arg sbom_definition_id "${{ steps.sbom_def.outputs.sbom_definition_id }}" \
+            --arg attachment_id "${{ steps.attachment.outputs.attachment_id }}" \
+            --arg build_id "${{ steps.format_build_number.outputs.formatted_build_id }}" \
+            --argjson force $FORCE \
+            '{
+              tenant_id: $tenant_id,
+              sbom_definition_id: $sbom_definition_id,
+              attachment_id: $attachment_id,
+              sbom_file_format: { __type: "AppSecopsSbomVersionFileFormatForCycloneDX", version: "1.6" },
+              build_id: $build_id,
+              force: $force
+            }')
+          RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/appsecops/sbom_version/create" \
+            -H "Content-Type: application/json" \
+            -H "X-Auth-Token: $AUTH_TOKEN" \
+            -d "$BODY")
+          HTTP_CODE=$(echo "$RESP" | tail -n1)
+          RESP_BODY=$(echo "$RESP" | sed '$d')
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::Create SBOM version failed (HTTP $HTTP_CODE): $RESP_BODY"
+            exit 1
+          fi
+          VERSION_ID=$(echo "$RESP_BODY" | jq -r '.data.sbom_version_id // .data.id // .sbom_version_id // .id // empty')
+          VERSION_NUMBER=$(echo "$RESP_BODY" | jq -r '.data.version_number // .version_number // empty')
+          echo "version_id=$VERSION_ID" >> $GITHUB_OUTPUT
+          echo "version_number=$VERSION_NUMBER" >> $GITHUB_OUTPUT
+          echo "SBOM version created successfully."
+
+      - name: Summary
+        run: |
+          {
+            echo "## SBOM upload complete"
+            echo "- **Project ID:** ${{ steps.project.outputs.project_id }}"
+            echo "- **SBOM Definition ID:** ${{ steps.sbom_def.outputs.sbom_definition_id }}"
+            PREV_REL="${{ steps.get_version.outputs.release_version_id }}"
+            if [ -z "$PREV_REL" ]; then
+              echo "- **Previous Version:** None (first upload)"
+            else
+              echo "- **Previous Version:** ${{ steps.get_version.outputs.current_version_num }} (release_version_id: $PREV_REL)"
+            fi
+            echo "- **Uploaded as Version:** ${{ steps.sbom_version.outputs.version_number }}"
+            echo "- **SBOM Version ID:** ${{ steps.sbom_version.outputs.version_id }}"
+            echo "- **Build ID:** ${{ steps.format_build_number.outputs.formatted_build_id }}"
+          } >> $GITHUB_STEP_SUMMARY
