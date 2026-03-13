@@ -395,7 +395,7 @@ jobs:
             # pull from previous version
             BUILD_ID="${{ steps.get_version.outputs.current_build_id }}"
             # If the current build ID is the default "1"
-            if [ "$BUILD_ID" = "1" ]; then
+            if [ -z "$BUILD_ID" ] || [ "$BUILD_ID" = "1" ]; then
               BUILD_ID='1.0.0'
             fi
           fi

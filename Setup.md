@@ -26,6 +26,10 @@ The following secrets must be available in the client's organizational secrets. 
 | `api_base_url` | String | No | CoreStack API base URL (defaults to production CoreStack API) |
 | `force_upload` | String | No | Allow upload if same content exists elsewhere (true/false) |
 
+### Notes
+
+If for some reason you need to scan multiple directories in the same repository, make sure to use the `sbom_definition_name` variable, and change it for each client workflow.  If it is not set, it defaults to the repository name, so all SBOMs will upload to the same definition, regardless of the `project_name`
+
 ## Sample client build.yml workflow file 
 
 In the client workflow, find a point where the SBOM can be created and insert a call-workflow job.
