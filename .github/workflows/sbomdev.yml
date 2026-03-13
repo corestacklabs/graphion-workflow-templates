@@ -257,13 +257,22 @@ jobs:
             echo "Existing SBOM definition found: $SBOM_DEF_ID — skipping create."
           else
             # No existing definition found — create a new one.
+            DESCRIPTION=""
+            If [ -n "$inputs.IMAGE" ]; then
+              DESCRIPTION="SBOM for container image"
+            elseif [ -n "$inputs.PATH" ]; then 
+              DESCRIPTION="SBOM for directory scan"
+            else
+              DESCRIPTION="SBOM for file scan"
+            fi
             CREATE_BODY=$(jq -n \
               --arg name "$SBOM_NAME" \
               --arg tenant_id "$TENANT_ID" \
               --arg project_id "$PROJECT_ID" \
+              --arg description "$DESCRIPTION" \
               '{
                 name: $name,
-                description: "SBOM for container image scan",
+                description: $description,
                 tenant_id: $tenant_id,
                 appsecops_project_id: $project_id,
                 tags: []
