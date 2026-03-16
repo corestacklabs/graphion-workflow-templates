@@ -9,6 +9,12 @@ on:
       CORESTACK_SECRET_KEY:
         description: "API Secret key from a CoreStack user"
         required: true
+      REGISTRY_USERNAME:
+        description: "Username for container registry (if using IMAGE input)"
+        required: false
+      REGISTRY_PASSWORD:
+        description: "Password or token for container registry (if using IMAGE input)"
+        required: false
     inputs:
       FILE:
         description: 'Path to input file for SBOM generation (e.g. Dockerfile or binary) - mutually exclusive with IMAGE and PATH'
@@ -62,6 +68,8 @@ jobs:
         uses: anchore/sbom-action@v0
         with:
          image: ${{ inputs.IMAGE }}
+         registry-username: ${{ secrets.REGISTRY_USERNAME }}
+         registry-password: ${{ secrets.REGISTRY_PASSWORD }}
          format: cyclonedx-json
          output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
 
