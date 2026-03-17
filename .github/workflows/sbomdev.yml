@@ -9,9 +9,6 @@ on:
       CORESTACK_SECRET_KEY:
         description: "API Secret key from a CoreStack user"
         required: true
-      REGISTRY_USERNAME:
-        description: "Username for container registry (if using IMAGE input)"
-        required: false
       REGISTRY_PASSWORD:
         description: "Password or token for container registry (if using IMAGE input)"
         required: false
@@ -52,6 +49,10 @@ on:
         type: string
         required: false
         default: 'false'
+      organization:
+        description: "Organization for container registry (if using IMAGE input)"
+        type: string
+        required: false
 
 env:
   API_BASE: ${{ inputs.api_base_url || 'https://api.corestack.io' }}
