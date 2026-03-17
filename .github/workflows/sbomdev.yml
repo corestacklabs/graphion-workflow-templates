@@ -387,7 +387,7 @@ jobs:
             fi
             # echo "Latest release: version_id=$RELEASE_VERSION_ID version_number=$CURRENT_VERSION_NUM"
           else
-            # echo "No existing SBOM versions — this upload will be version 1."
+            echo "No existing SBOM versions — this upload will be version 1."
           fi
 
           NEXT_VERSION=$((CURRENT_VERSION_NUM + 1))
