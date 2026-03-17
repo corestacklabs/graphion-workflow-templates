@@ -69,7 +69,7 @@ jobs:
         uses: anchore/sbom-action@v0
         with:
          image: ${{ inputs.IMAGE }}
-         registry-username: ${{ secrets.REGISTRY_USERNAME }}
+         registry-username: ${{ inputs.organization }}
          registry-password: ${{ secrets.REGISTRY_PASSWORD }}
          format: cyclonedx-json
          output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
