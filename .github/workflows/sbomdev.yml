@@ -269,7 +269,7 @@ jobs:
             DESCRIPTION=""
             If [ -n "$inputs.IMAGE" ]; then
               DESCRIPTION="SBOM for container image"
-            elseif [ -n "$inputs.PATH" ]; then 
+            elif [ -n "$inputs.PATH" ]; then 
               DESCRIPTION="SBOM for directory scan"
             else
               DESCRIPTION="SBOM for file scan"
