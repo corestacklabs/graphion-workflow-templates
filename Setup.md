@@ -38,6 +38,13 @@ The following secrets must be available in the client's organizational secrets. 
 
 * `IMAGE` is passed in the following format:  registry/user/image:tag (e.g. docker.io/username/demo:latest)
 
+* GitHub will not pass secrets in an input.  They must be passed in the secrets section of call-workflow.
+
+### Troubleshooting
+
+* Most steps in the workflow will echo information at the completion of the step or job.
+
+* If the workflow fails, be sure to check the inputs section of Set Up Jobs.  Check to see if any input values failed to pass from the calling workflow.
 
 ## Sample client build.yml workflow file 
 

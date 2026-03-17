@@ -264,7 +264,7 @@ jobs:
           fi
 
           if [ -n "$SBOM_DEF_ID" ] && [ "$SBOM_DEF_ID" != "null" ]; then
-            echo "Existing SBOM definition found: $SBOM_DEF_ID — skipping create."
+            echo "Existing SBOM definition found: $SBOM_DEF_ID"
           else
             # No existing definition found — create a new one.
             DESCRIPTION="SBOM for ${{ inputs.project_name }}"
@@ -345,7 +345,7 @@ jobs:
           echo "sbom_definition_id=$SBOM_DEF_ID" >> $GITHUB_OUTPUT
           echo "SBOM Definition ID: $SBOM_DEF_ID"
 
-      - name: Get current SBOM version number
+      - name: Get current SBOM version number and build ID
         id: get_version
         env:
           AUTH_TOKEN: ${{ steps.auth.outputs.token }}
@@ -385,9 +385,9 @@ jobs:
               CURRENT_VERSION_NUM=1
               CURRENT_BUILD_ID="1"
             fi
-            echo "Latest release: version_id=$RELEASE_VERSION_ID version_number=$CURRENT_VERSION_NUM"
+            # echo "Latest release: version_id=$RELEASE_VERSION_ID version_number=$CURRENT_VERSION_NUM"
           else
-            echo "No existing SBOM versions — this upload will be version 1."
+            # echo "No existing SBOM versions — this upload will be version 1."
           fi
 
           NEXT_VERSION=$((CURRENT_VERSION_NUM + 1))
