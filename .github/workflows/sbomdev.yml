@@ -229,6 +229,7 @@ jobs:
             SBOM_NAME="${{ steps.validate.outputs.sbom_name }}"
           fi
           PROJECT_ID="${{ steps.project.outputs.project_id }}"
+          PROJECT_NAME="${{ inputs.project_name }}"
 
           # Step 1: Proactively look up existing SBOM definition by name + project.
           # This avoids hitting create when a definition (and version) already exist,
@@ -266,14 +267,7 @@ jobs:
             echo "Existing SBOM definition found: $SBOM_DEF_ID — skipping create."
           else
             # No existing definition found — create a new one.
-            DESCRIPTION=""
-            If [ -n "$inputs.IMAGE" ]; then
-              DESCRIPTION="SBOM for container image"
-            elif [ -n "$inputs.PATH" ]; then 
-              DESCRIPTION="SBOM for directory scan"
-            else
-              DESCRIPTION="SBOM for file scan"
-            fi
+            DESCRIPTION="SBOM for ${{ inputs.project_name }}"
             CREATE_BODY=$(jq -n \
               --arg name "$SBOM_NAME" \
               --arg tenant_id "$TENANT_ID" \
