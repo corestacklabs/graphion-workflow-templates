@@ -22,9 +22,13 @@ on:
         required: false
         type: string
       IMAGE:
-        description: 'Container image reference (e.g. myregistry/myapp:1.0)'
+        description: 'Container image reference (e.g. myregistry/myapp:1.0) for sbom generation - mutually exclusive with FILE and PATH. If the registry requires authentication, provide credentials via REGISTRY_USERNAME and REGISTRY_PASSWORD inputs.'
         required: false
         type: string
+      REGISTRY_USERNAME:
+        description: 'User name for container registry (if using IMAGE input)'
+        type: string
+        required: false
       project_name:
         description: 'AppSecOps project name (e.g. Payment Service) - used to resolve project_id'
         type: string
@@ -35,7 +39,7 @@ on:
         required: false
         default: ''
       build_id:
-        description: 'Build/version identifier override. Alphanumeric + spaces only, 3-50 chars (e.g. "myapp v2" or "build 42"). If omitted, auto-set to "build {next_version}".'
+        description: 'Build/version identifier override. Alphanumeric and " .-+", 3-50 chars (e.g. "myapp v2" or "2.02-beta"). If omitted, auto-set to "1.0.0".'
         type: string
         required: false
         default: ''
@@ -49,10 +53,6 @@ on:
         type: string
         required: false
         default: 'false'
-      organization:
-        description: "Organization for container registry (if using IMAGE input)"
-        type: string
-        required: false
 
 env:
   API_BASE: ${{ inputs.api_base_url || 'https://api.corestack.io' }}
@@ -69,7 +69,7 @@ jobs:
         uses: anchore/sbom-action@v0
         with:
          image: ${{ inputs.IMAGE }}
-         registry-username: ${{ inputs.organization }}
+         registry-username: ${{ inputs.REGISTRY_USERNAME }}
          registry-password: ${{ secrets.REGISTRY_PASSWORD }}
          format: cyclonedx-json
          output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
