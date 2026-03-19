@@ -144,12 +144,12 @@ jobs:
         if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' }}
         run: |
           REGISTRY=$(echo "${{ inputs.IMAGE }}" | cut -d'/' -f1)
-          ACR = false
+          ACR="false"
           if echo "$REGISTRY" | grep -qi "amazonaws.com"; then
             REGISTRY="amazonaws.com"
           fi
           if echo "$REGISTRY" | grep -qi "azurecr.io"; then
-            ACR = true
+            ACR="true"
           fi
           echo "value=$REGISTRY" >> $GITHUB_OUTPUT
           echo "acr=$ACR" >> $GITHUB_OUTPUT
@@ -176,7 +176,7 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v1
         
       - name: Login to Azure Container Registry
-        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && steps.registry.outputs.acr }}
+        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && steps.registry.outputs.acr == 'true' }}
         uses: azure/docker-login@v2
         with:
           login-server: steps.registry.outputs.value
