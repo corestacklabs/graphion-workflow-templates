@@ -211,6 +211,14 @@ jobs:
             echo "- **High Count:** ${{ steps.grype-analysis.outputs.Highs }}"
             echo "- **Medium Count:** ${{ steps.grype-analysis.outputs.Mediums }}"
           } >> $GITHUB_STEP_SUMMARY
+
+      - name: Add Dockle summary to workflow summary
+        if: ${{ inputs.IMAGE != '' }}
+        run: |
+          echo "### 🔍 Dockle Scan Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Severity | Code | Title |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|---|" >> $GITHUB_STEP_SUMMARY
+          jq -r '.warnings[] | "| \(.level) | \(.code) | \(.title) |"' ${{ github.event.repository.name }}-dockle.json >> $GITHUB_STEP_SUMMARY
             
   upload-sbom:
     needs: create_sbom_and_scan
