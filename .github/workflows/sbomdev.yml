@@ -199,26 +199,32 @@ jobs:
           name: Dockle Report
           path: ${{ github.event.repository.name }}-dockle.json
 
-      - name: Summary
+      - name: Artifact Summary
         run: |
           {
             echo "## SBOM Creation and Scan complete"
             echo "- **SBOM Artifact:** ${{ github.event.repository.name }}-sbom.json"
             echo "- **Dockle Artifact:** ${{ github.event.repository.name }}-dockle.json"
             echo "- **Hadolint Artifact:** ${{ github.event.repository.name }}-hadolint.json"
-            echo "- **Grype Scan Results:**"
-            echo "- **Critical Count:** ${{ steps.grype-analysis.outputs.Criticals }}"
-            echo "- **High Count:** ${{ steps.grype-analysis.outputs.Highs }}"
-            echo "- **Medium Count:** ${{ steps.grype-analysis.outputs.Mediums }}"
           } >> $GITHUB_STEP_SUMMARY
 
-      - name: Add Dockle summary to workflow summary
+      - name: Grype summary
+        run: |
+          echo "### 🔍 Grype Scan Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Critical | ${{ steps.grype-analysis.outputs.Criticals }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| High | ${{ steps.grype-analysis.outputs.Highs }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Medium | ${{ steps.grype-analysis.outputs.Mediums }} |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Dockle summary
         if: ${{ inputs.IMAGE != '' }}
         run: |
-          echo "### 🔍 Dockle Scan Summary" >> $GITHUB_STEP_SUMMARY
-          echo "| Severity | Code | Title |" >> $GITHUB_STEP_SUMMARY
-          echo "|---|---|---|" >> $GITHUB_STEP_SUMMARY
-          jq -r '.warnings[] | "| \(.level) | \(.code) | \(.title) |"' ${{ github.event.repository.name }}-dockle.json >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 Dockle Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          jq -r '.summary | to_entries[] | "| \(.key) | \(.value) |"' ${{ github.event.repository.name }}-dockle.json >> $GITHUB_STEP_SUMMARY
+
             
   upload-sbom:
     needs: create_sbom_and_scan
