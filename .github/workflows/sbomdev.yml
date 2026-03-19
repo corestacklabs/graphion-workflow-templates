@@ -153,7 +153,7 @@ jobs:
           fi
           echo "value=$REGISTRY" >> $GITHUB_OUTPUT
           echo "acr=$ACR" >> $GITHUB_OUTPUT
-          echo "registry is $REGISTRY" >> $GITHUB_OUTPUT
+          echo "registry: $REGISTRY"
 
       - name: Log in to Docker Hub
         if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && (steps.registry.outputs.value == 'docker.io' || steps.registry.outputs.value == 'ghcr.io') }}
