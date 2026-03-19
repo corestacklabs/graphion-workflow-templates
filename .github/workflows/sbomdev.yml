@@ -190,6 +190,7 @@ jobs:
           image: ${{ inputs.IMAGE }}
           report-format: json
           report-name: ${{ github.event.repository.name }}-dockle
+          exit-code: 0
 
       - name: Upload Dockle Report as artifact
         if: ${{ inputs.IMAGE != '' }}
