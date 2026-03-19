@@ -9,6 +9,9 @@ on:
       CORESTACK_SECRET_KEY:
         description: "API Secret key from a CoreStack user"
         required: true
+      REGISTRY_PASSWORD:
+        description: "Password or token for container registry (if using IMAGE input)"
+        required: false
     inputs:
       FILE:
         description: 'Path to input file for SBOM generation (e.g. Dockerfile or binary) - mutually exclusive with IMAGE and PATH'
@@ -19,9 +22,13 @@ on:
         required: false
         type: string
       IMAGE:
-        description: 'Container image reference (e.g. myregistry/myapp:1.0)'
+        description: 'Container image reference (e.g. myregistry/myapp:1.0) for sbom generation - mutually exclusive with FILE and PATH. If the registry requires authentication, provide credentials via REGISTRY_USERNAME and REGISTRY_PASSWORD inputs.'
         required: false
         type: string
+      REGISTRY_USERNAME:
+        description: 'User name for container registry (if using IMAGE input)'
+        type: string
+        required: false
       project_name:
         description: 'AppSecOps project name (e.g. Payment Service) - used to resolve project_id'
         type: string
@@ -32,7 +39,7 @@ on:
         required: false
         default: ''
       build_id:
-        description: 'Build/version identifier override. Alphanumeric + spaces only, 3-50 chars (e.g. "myapp v2" or "build 42"). If omitted, auto-set to "build {next_version}".'
+        description: 'Build/version identifier override. Alphanumeric and " .-+", 3-50 chars (e.g. "myapp v2" or "2.02-beta"). If omitted, auto-set to "1.0.0".'
         type: string
         required: false
         default: ''
@@ -62,6 +69,8 @@ jobs:
         uses: anchore/sbom-action@v0
         with:
          image: ${{ inputs.IMAGE }}
+         registry-username: ${{ inputs.REGISTRY_USERNAME }}
+         registry-password: ${{ secrets.REGISTRY_PASSWORD }}
          format: cyclonedx-json
          output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
 
@@ -220,6 +229,7 @@ jobs:
             SBOM_NAME="${{ steps.validate.outputs.sbom_name }}"
           fi
           PROJECT_ID="${{ steps.project.outputs.project_id }}"
+          PROJECT_NAME="${{ inputs.project_name }}"
 
           # Step 1: Proactively look up existing SBOM definition by name + project.
           # This avoids hitting create when a definition (and version) already exist,
@@ -254,16 +264,18 @@ jobs:
           fi
 
           if [ -n "$SBOM_DEF_ID" ] && [ "$SBOM_DEF_ID" != "null" ]; then
-            echo "Existing SBOM definition found: $SBOM_DEF_ID — skipping create."
+            echo "Existing SBOM definition found: $SBOM_DEF_ID"
           else
             # No existing definition found — create a new one.
+            DESCRIPTION="SBOM for ${{ inputs.project_name }}"
             CREATE_BODY=$(jq -n \
               --arg name "$SBOM_NAME" \
               --arg tenant_id "$TENANT_ID" \
               --arg project_id "$PROJECT_ID" \
+              --arg description "$DESCRIPTION" \
               '{
                 name: $name,
-                description: "SBOM for container image scan",
+                description: $description,
                 tenant_id: $tenant_id,
                 appsecops_project_id: $project_id,
                 tags: []
@@ -333,7 +345,7 @@ jobs:
           echo "sbom_definition_id=$SBOM_DEF_ID" >> $GITHUB_OUTPUT
           echo "SBOM Definition ID: $SBOM_DEF_ID"
 
-      - name: Get current SBOM version number
+      - name: Get current SBOM version number and build ID
         id: get_version
         env:
           AUTH_TOKEN: ${{ steps.auth.outputs.token }}
@@ -366,12 +378,14 @@ jobs:
             VER_BODY=$(echo "$VER_RESP" | sed '$d')
             if [ "$VER_HTTP_CODE" -ge 200 ] && [ "$VER_HTTP_CODE" -lt 300 ]; then
               CURRENT_VERSION_NUM=$(echo "$VER_BODY" | jq -r '.version_number // .data.version_number // 1')
+              CURRENT_BUILD_ID=$(echo "$VER_BODY" | jq -r '.build_id // .data.build_id // 1')
             else
               # release_version_id exists so at least 1 version is present — default to 1.
               echo "::warning::Could not fetch version item (HTTP $VER_HTTP_CODE) — release_version_id is set, defaulting to version 1."
               CURRENT_VERSION_NUM=1
+              CURRENT_BUILD_ID="1"
             fi
-            echo "Latest release: version_id=$RELEASE_VERSION_ID version_number=$CURRENT_VERSION_NUM"
+            # echo "Latest release: version_id=$RELEASE_VERSION_ID version_number=$CURRENT_VERSION_NUM"
           else
             echo "No existing SBOM versions — this upload will be version 1."
           fi
@@ -379,8 +393,50 @@ jobs:
           NEXT_VERSION=$((CURRENT_VERSION_NUM + 1))
           echo "release_version_id=$RELEASE_VERSION_ID" >> $GITHUB_OUTPUT
           echo "current_version_num=$CURRENT_VERSION_NUM" >> $GITHUB_OUTPUT
+          echo "current_build_id=$CURRENT_BUILD_ID" >> $GITHUB_OUTPUT
           echo "next_version=$NEXT_VERSION" >> $GITHUB_OUTPUT
           echo "Current version: $CURRENT_VERSION_NUM → next version: $NEXT_VERSION"
+          echo "Current build id: $CURRENT_BUILD_ID"
+        
+      - name: Format build number
+        id: format_build_number
+        run: |          
+          BUILD_ID="${{ inputs.build_id }}"
+          NEXT_VERSION="${{ steps.get_version.outputs.next_version }}"
+          if [ -z "$BUILD_ID" ]; then
+            # pull from previous version
+            BUILD_ID="${{ steps.get_version.outputs.current_build_id }}"
+            # If the current build ID is the default "1"
+            if [ -z "$BUILD_ID" ] || [ "$BUILD_ID" = "1" ]; then
+              BUILD_ID='1.0.0'
+            fi
+          fi
+          # strip "build ", extra spaces, and special characters except . and - which are common in version numbers (e.g. 1.0.0, 2.1.3-beta)
+          FORMATTED_BUILD_ID=$(echo "$BUILD_ID" | sed 's/^build[[:space:]]*//I' | tr -s ' ' \
+          | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr -cd '[:alnum:]+-. ' | cut -c1-50)
+          # if length is less than 3 chars, append ".0.${NEXT_VERSION}" to meet API requirement of at least 3 chars
+          if [ ${#FORMATTED_BUILD_ID} -lt 3 ]; then
+            FORMATTED_BUILD_ID="${FORMATTED_BUILD_ID}.0.${NEXT_VERSION}"
+          else
+            # if the last character is a number, increase it by 1
+            if [[ "${FORMATTED_BUILD_ID}" =~ [0-9]$ ]]; then
+              LAST_CHAR=$(echo "$FORMATTED_BUILD_ID" | grep -oE '[0-9]$')
+              PREFIX=$(echo "$FORMATTED_BUILD_ID" | sed 's/[0-9]$//')
+              INCREMENTED=$((LAST_CHAR + 1))
+              FORMATTED_BUILD_ID="${PREFIX}${INCREMENTED}"
+            else
+              # if the last character is not a number, find the first number from the right and increment it, otherwise append NEXT_VERSION
+              LAST_NUMBER=$(echo "$FORMATTED_BUILD_ID" | grep -oE '[0-9]' | tail -1)
+              if [ -n "$LAST_NUMBER" ]; then
+                FORMATTED_BUILD_ID=$(echo "$FORMATTED_BUILD_ID" | sed "s/\(.*\\)$LAST_NUMBER/\\1$((LAST_NUMBER + 1))/")
+              else
+                FORMATTED_BUILD_ID="${FORMATTED_BUILD_ID}.${NEXT_VERSION}"
+              fi
+            fi
+          fi
+          # Output the formatted buid id to be used in subsequent steps
+          echo "formatted_build_id=$FORMATTED_BUILD_ID" >> $GITHUB_OUTPUT
+          echo "Build ID formatted: $FORMATTED_BUILD_ID"
 
       - name: Create attachment
         id: attachment
@@ -431,23 +487,6 @@ jobs:
         env:
           AUTH_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
-          BUILD_ID="${{ inputs.build_id }}"
-          if [ -z "$BUILD_ID" ]; then
-            # "build N" is always 7+ chars, alphanumeric + space — satisfies the API rule:
-            # alphanumeric + spaces, length 3-50.
-            BUILD_ID="build ${{ steps.get_version.outputs.next_version }}"
-          else
-            # Sanitize user-provided value: strip anything that is not alphanumeric or space,
-            # then trim to 50 chars. The API rejects dots, hyphens, underscores, etc.
-            BUILD_ID=$(echo "$BUILD_ID" | tr -cd '[:alnum:] ' | cut -c1-50)
-            BUILD_ID=$(echo "$BUILD_ID" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-            if [ ${#BUILD_ID} -lt 3 ]; then
-              echo "::warning::Sanitized build_id '$BUILD_ID' is shorter than 3 chars — appending version number."
-              BUILD_ID="$BUILD_ID ${{ steps.get_version.outputs.next_version }}"
-              BUILD_ID=$(echo "$BUILD_ID" | sed 's/^[[:space:]]*//')
-            fi
-          fi
-          echo "Using build_id: $BUILD_ID"
           FORCE=false
           if [ "${{ inputs.force_upload }}" = "true" ]; then
             FORCE=true
@@ -457,7 +496,7 @@ jobs:
             --arg tenant_id "${{ steps.auth.outputs.tenant_id }}" \
             --arg sbom_definition_id "${{ steps.sbom_def.outputs.sbom_definition_id }}" \
             --arg attachment_id "${{ steps.attachment.outputs.attachment_id }}" \
-            --arg build_id "$BUILD_ID" \
+            --arg build_id "${{ steps.format_build_number.outputs.formatted_build_id }}" \
             --argjson force $FORCE \
             '{
               tenant_id: $tenant_id,
@@ -481,8 +520,7 @@ jobs:
           VERSION_NUMBER=$(echo "$RESP_BODY" | jq -r '.data.version_number // .version_number // empty')
           echo "version_id=$VERSION_ID" >> $GITHUB_OUTPUT
           echo "version_number=$VERSION_NUMBER" >> $GITHUB_OUTPUT
-          echo "build_id=$BUILD_ID" >> $GITHUB_OUTPUT
-          echo "SBOM version $VERSION_NUMBER created (ID: $VERSION_ID, build_id: $BUILD_ID)"
+          echo "SBOM version created successfully."
 
       - name: Summary
         run: |
@@ -498,5 +536,5 @@ jobs:
             fi
             echo "- **Uploaded as Version:** ${{ steps.sbom_version.outputs.version_number }}"
             echo "- **SBOM Version ID:** ${{ steps.sbom_version.outputs.version_id }}"
-            echo "- **Build ID:** ${{ steps.sbom_version.outputs.build_id }}"
+            echo "- **Build ID:** ${{ steps.format_build_number.outputs.formatted_build_id }}"
           } >> $GITHUB_STEP_SUMMARY
