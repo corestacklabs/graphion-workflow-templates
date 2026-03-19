@@ -29,6 +29,15 @@ on:
         description: 'User name for container registry (if using IMAGE input)'
         type: string
         required: false
+      REGISTRY_REGION:
+        description: 'Region for container registry  (if using IMAGE input and REGISTRY is ECR)'
+        type: string
+        required: false
+      dockerfile_path:
+        description: 'Path to Dockerfile for hadolint analysis (defaults to "./dockerfile" in repo root)'
+        type: string
+        required: false
+        default: './dockerfile'
       project_name:
         description: 'AppSecOps project name (e.g. Payment Service) - used to resolve project_id'
         type: string
@@ -63,7 +72,7 @@ jobs:
     steps:          
       - name: Checkout code
         uses: actions/checkout@v4
-        
+
       - name: Create SBOM With Image
         if: ${{ inputs.IMAGE != '' }}
         uses: anchore/sbom-action@v0
@@ -114,11 +123,89 @@ jobs:
           echo "Mediums=$MEDIUM_CVE" >> $GITHUB_OUTPUT
           echo "Grype analysis complete: $CRITICAL_CVE critical, $HIGH_CVE high, $MEDIUM_CVE medium vulnerabilities found."
 
+      - name: Lint Dockerfile with Hadolint
+        if: ${{ inputs.IMAGE != '' }}
+        id: hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: ${{ inputs.dockerfile_path }}
+          format: json
+          output-file: "${{ github.event.repository.name }}-hadolint.json"
+
+      - name: Upload Hadolint JSON report
+        if: ${{ inputs.IMAGE != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hadolint-json-report
+          path: ${{ github.event.repository.name }}-hadolint.json
+
+      - name: Determine Container Registry
+        id: registry
+        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' }}
+        run: |
+          REGISTRY=$(echo "${{ inputs.IMAGE }}" | cut -d'/' -f1)
+          ACR = false
+          if echo "$REGISTRY" | grep -qi "amazonaws.com"; then
+            REGISTRY="amazonaws.com"
+          fi
+          if echo "$REGISTRY" | grep -qi "azurecr.io"; then
+            ACR = true
+          fi
+          echo "value=$REGISTRY" >> $GITHUB_OUTPUT
+          echo "acr=$ACR" >> $GITHUB_OUTPUT
+          echo "registry is $REGISTRY" >> $GITHUB_OUTPUT
+
+      - name: Log in to Docker Hub
+        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && (steps.registry.outputs.value == 'docker.io' || steps.registry.outputs.value == 'ghcr.io') }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ inputs.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+          
+      - name: Configure AWS credentials
+        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && steps.registry.outputs.value == 'amazonaws.com' }}
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ inputs.REGISTRY_USERNAME }}
+          aws-secret-access-key: ${{ secrets.REGISTRY_PASSWORD }}
+          aws-region: ${{ inputs.REGISTRY_REGION }}
+
+      - name: Login to Amazon ECR
+        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && steps.registry.outputs.value == 'amazonaws.com' }}
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+        
+      - name: Login to Azure Container Registry
+        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && steps.registry.outputs.acr }}
+        uses: azure/docker-login@v2
+        with:
+          login-server: steps.registry.outputs.value
+          username: ${{ inputs.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Run Dockle scan and generate JSON report
+        if: ${{ inputs.IMAGE != '' }}
+        uses: erzz/dockle-action@v1
+        with:
+          image: ${{ inputs.IMAGE }}
+          report-format: json
+          report-name: ${{ github.event.repository.name }}-dockle
+
+      - name: Upload Dockle Report as artifact
+        if: ${{ inputs.IMAGE != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dockle Report
+          path: ${{ github.event.repository.name }}-dockle.json
+
       - name: Summary
         run: |
           {
             echo "## SBOM Creation and Scan complete"
             echo "- **SBOM Artifact:** ${{ github.event.repository.name }}-sbom.json"
+            echo "- **Dockle Artifact:** ${{ github.event.repository.name }}-dockle.json"
+            echo "- **Hadolint Artifact:** ${{ github.event.repository.name }}-hadolint.json"
+            echo "- **Grype Scan Results:**"
             echo "- **Critical Count:** ${{ steps.grype-analysis.outputs.Criticals }}"
             echo "- **High Count:** ${{ steps.grype-analysis.outputs.Highs }}"
             echo "- **Medium Count:** ${{ steps.grype-analysis.outputs.Mediums }}"

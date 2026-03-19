@@ -1,8 +1,10 @@
-# Graphion Workflow Templates
+# Graphion™ Pipeline 
 
-This repository contains a reusable GitHub action pipeline (./github/workflows/sbom.yml) to create, scan, and publish an SBOM to CoreStack.
+**CoreStack Graphion™** helps enterprises stay ahead in fast-moving, cloud-native environments where constant change and third-party components create hidden risks. Powered by the **Graphion AI Agent**, it turns complex **SBOM** and **IBOM** relationships into clear, actionable intelligence so teams instantly see what’s vulnerable, what’s connected, and what matters most. By unifying **AppSec, SSCS, CSPM, APM, continuous compliance, and AI-guided remediation**, Graphion strengthens cloud posture and accelerates secure operations. It gives **Dev, Sec, Ops, and System Owners** the real-time context they need, **automates trust and cATO workflows**, and continuously validates assets across **build, deploy, and runtime** to help organizations move faster and stay secure.
 
-## Required Secrets and Variables
+This repository contains a reusable GitHub action pipeline (./github/workflows/sbom.yml) to create, scan, and publish an SBOM to CoreStack.  In addition, for container images, the pipeline will lint the dockerfile with Hadolint and scan the image with Dockle.
+
+## Secrets and Inputs
 
 The following secrets must be available in the client's organizational secrets.  The API key must come from a user with appropriate access to the client's tenant in CoreStack. Variables are populated as needed or required in the project's build.yml. 
 
@@ -14,19 +16,25 @@ The following secrets must be available in the client's organizational secrets. 
 | `CORESTACK_SECRET_KEY` | Secret | Yes | CoreStack API secret key |
 | `REGISTRY_PASSWORD` | Secret | No | Password for container registry if needed |
 
+* **Note:** To obtain the `CORESTACK_ACCESS_KEY` and `CORESTACK_SECRET_KEY` for your CoreStack Tenant, find the instructions in the following document. The steps needed are listed in the section titled: How to get the Access Key and Secret Key
+
+* **[CoreStack External APIs](https://docs.corestack.io/docs/corestack-api-modules)**
+
 ### Inputs
 
-| Name | Type | Required | Unique | Description |
-|---|---|---|---|---|
-| `FILE` | String | FILE or PATH or IMAGE | No | Path to input file for SBOM generation (e.g. Dockerfile or binary) - mutually exclusive with IMAGE and PATH |
-| `PATH` | String | FILE or PATH or IMAGE | No | Path to directory for SBOM generation (e.g. folder holding package.json and /src directory) - mutually exclusive with IMAGE and FILE |
-| `IMAGE` | String | FILE or PATH or IMAGE | No | Container image reference for SBOM generation  (e.g. myregistry/myapp:1.0) - mutually exclusive with PATH and FILE |
-| `REGISTRY_USERNAME` | String | No | No | Username for container registry if needed |
-| `project_name` | String | Yes | Yes | AppSecOps project name (e.g. Payment Service) - used to resolve project_id |
-| `sbom_definition_name` | String | No | Yes | Name for the SBOM definition (defaults to filename without extension) |
-| `build_id` | String | No | Yes | Build/version identifier (defaults to github.run_id-github.run_attempts) - must be unique |
-| `api_base_url` | String | No | No | CoreStack API base URL (defaults to production CoreStack API) |
-| `force_upload` | String | No | No | Allow upload if same content exists elsewhere (true/false) |
+| Name | Type | Required | Unique | Default | Description |
+|---|---|---|---|---|---|
+| `FILE` | String | FILE or PATH or IMAGE | No | | Path to input file for SBOM generation (e.g. Dockerfile or binary) - mutually exclusive with IMAGE and PATH |
+| `PATH` | String | FILE or PATH or IMAGE | No | | Path to directory for SBOM generation (e.g. folder holding package.json and /src directory) - mutually exclusive with IMAGE and FILE |
+| `IMAGE` | String | FILE or PATH or IMAGE | No | | Container image reference for SBOM generation  (e.g. myregistry/myapp:1.0) - mutually exclusive with PATH and FILE |
+| `REGISTRY_USERNAME` | String | No | No | | Username for container registry - only if using IMAGE |
+| `REGISTRY_REGION` | String | No | No | | Region for container registry - only if using IMAGE and only for ECR |
+| `dockerfile_path` | String | No | No | ./dockerfile | Path to Dockerfile for hadolint analysis - used only with IMAGE |
+| `project_name` | String | Yes | Yes | | AppSecOps project name (e.g. Payment Service) - used to resolve project_id |
+| `sbom_definition_name` | String | No | Yes | repo name | Name for the SBOM definition (defaults to filename without extension) |
+| `build_id` | String | No | Yes | 1.0.1 | Build/version identifier (defaults to github.run_id-github.run_attempts) - must be unique |
+| `api_base_url` | String | No | No | api.corestack.io | CoreStack API base URL (defaults to production CoreStack API) |
+| `force_upload` | String | No | No | false | Allow upload if same content exists elsewhere (true/false) |
 
 ### Notes
 
@@ -78,4 +86,4 @@ jobs:
 
 ## Example projects with workflows
 
-Example projects have been created in the `graphion_workflow_templates_example` repo.  There are 3 examples including Terraform, Angular, and Docker projects.  A workflow has been created and tested for each, and the SBOMs upload to the CNAPP-DEMO CoreStack instance.
+Example projects have been created in the **[Example](../graphion_workflow_templates_example/)** repo.  There are 3 examples including Terraform, Angular, and Docker projects.  A workflow has been created and tested for each, and the SBOMs upload to the CNAPP-DEMO CoreStack instance.
