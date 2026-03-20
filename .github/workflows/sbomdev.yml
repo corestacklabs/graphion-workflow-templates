@@ -69,9 +69,9 @@ env:
 jobs:  
   create-sbom-and-scan:
     runs-on: ubuntu-latest
-    steps:          
+    steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Create SBOM With Image
         if: ${{ inputs.IMAGE != '' }}
@@ -105,7 +105,7 @@ jobs:
             grype sbom:"${{ github.event.repository.name }}-sbom.cdx.json" -o cyclonedx-json > ${{ github.event.repository.name }}-sbom.json
 
       - name: Upload Grype Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
             name: grype-output-cdx
             path: ${{ github.event.repository.name }}-sbom.json
@@ -134,7 +134,7 @@ jobs:
 
       - name: Upload Hadolint Artifact
         if: ${{ inputs.IMAGE != '' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: hadolint-json-report
           path: ${{ github.event.repository.name }}-hadolint.json
@@ -193,7 +193,7 @@ jobs:
 
       - name: Upload Dockle Artifact
         if: ${{ inputs.IMAGE != '' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: Dockle Report
           path: ${{ github.event.repository.name }}-dockle.json
@@ -237,7 +237,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:      
       - name: Download Artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           merge-multiple: true
           path: .
@@ -255,14 +255,14 @@ jobs:
           fi
           # Check if hadolint and dockle reports exist (only for container image input)
           if [[ -f "${{ github.event.repository.name }}-hadolint.json" ]]; then
-            echo "::set-output name=hadolint_exists::true"
+            echo "hadolint_exists=true" >> $GITHUB_OUTPUT  
           else
-            echo "::set-output name=hadolint_exists::false"
+            echo "hadolint_exists=false" >> $GITHUB_OUTPUT  
           fi
           if [[ -f "${{ github.event.repository.name }}-dockle.json" ]]; then
-            echo "::set-output name=dockle_exists::true"
+            echo "dockle_exists=true" >> $GITHUB_OUTPUT  
           else
-            echo "::set-output name=dockle_exists::false"
+            echo "dockle_exists=false" >> $GITHUB_OUTPUT  
           fi
           # get the base SBOM name
           FILENAME=$(basename "${{ github.event.repository.name }}-sbom.json")
