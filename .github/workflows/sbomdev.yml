@@ -132,7 +132,7 @@ jobs:
           format: json
           output-file: "${{ github.event.repository.name }}-hadolint.json"
 
-      - name: Upload Hadolint JSON report
+      - name: Upload Hadolint Artifact
         if: ${{ inputs.IMAGE != '' }}
         uses: actions/upload-artifact@v4
         with:
@@ -191,14 +191,14 @@ jobs:
           report-name: ${{ github.event.repository.name }}-dockle
           exit-code: 0
 
-      - name: Upload Dockle Report as artifact
+      - name: Upload Dockle Artifact
         if: ${{ inputs.IMAGE != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: Dockle Report
           path: ${{ github.event.repository.name }}-dockle.json
 
-      - name: Artifact Summary
+      - name: Generate Artifact Summary
         run: |
           {
             echo "## SBOM Creation and Scan complete"
@@ -207,22 +207,26 @@ jobs:
             echo "- **Hadolint Artifact:** ${{ github.event.repository.name }}-hadolint.json"
           } >> $GITHUB_STEP_SUMMARY
 
-      - name: Grype summary
+      - name: Generate Grype Summary
         run: |
-          echo "### 🔍 Grype Scan Summary" >> $GITHUB_STEP_SUMMARY
-          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
-          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
-          echo "| Critical | ${{ steps.grype-analysis.outputs.Criticals }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| High | ${{ steps.grype-analysis.outputs.Highs }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Medium | ${{ steps.grype-analysis.outputs.Mediums }} |" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "### 🔍 Grype Scan Summary"
+            echo "| Severity | Count |"
+            echo "|---|---|"
+            echo "| Critical | ${{ steps.grype-analysis.outputs.Criticals }} |"
+            echo "| High | ${{ steps.grype-analysis.outputs.Highs }} |"
+            echo "| Medium | ${{ steps.grype-analysis.outputs.Mediums }} |"
+          } >> $GITHUB_STEP_SUMMARY
 
-      - name: Dockle summary
+      - name: Generate Dockle Summary
         if: ${{ inputs.IMAGE != '' }}
         run: |
-          echo "### 📊 Dockle Summary" >> $GITHUB_STEP_SUMMARY
-          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
-          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
-          jq -r '.summary | to_entries[] | "| \(.key) | \(.value) |"' ${{ github.event.repository.name }}-dockle.json >> $GITHUB_STEP_SUMMARY
+          {
+            echo "### 📊 Dockle Summary"
+            echo "| Severity | Count |"
+            echo "|---|---|"
+            jq -r '.summary | to_entries[] | "| \(.key) | \(.value) |"' ${{ github.event.repository.name }}-dockle.json
+          } >> $GITHUB_STEP_SUMMARY
 
   upload-sbom:
     needs: create-sbom-and-scan
@@ -231,7 +235,11 @@ jobs:
       - name: Download Artifacts
         uses: actions/download-artifact@v4
         with:
-          path: ./
+          merge-multiple: true
+          path: .
+
+      - name: List files in repo root (for verification)
+        run: ls -R
 
       - name: Validate SBOM file exists
         id: validate
