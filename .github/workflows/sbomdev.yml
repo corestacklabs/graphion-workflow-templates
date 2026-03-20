@@ -203,8 +203,10 @@ jobs:
           {
             echo "## SBOM Creation and Scan complete"
             echo "- **SBOM Artifact:** ${{ github.event.repository.name }}-sbom.json"
-            echo "- **Dockle Artifact:** ${{ github.event.repository.name }}-dockle.json"
-            echo "- **Hadolint Artifact:** ${{ github.event.repository.name }}-hadolint.json"
+            if: ${{ inputs.IMAGE != '' }}; then
+              echo "- **Dockle Artifact:** ${{ github.event.repository.name }}-dockle.json"
+              echo "- **Hadolint Artifact:** ${{ github.event.repository.name }}-hadolint.json"
+            fi
           } >> $GITHUB_STEP_SUMMARY
 
       - name: Generate Grype Summary
@@ -244,10 +246,23 @@ jobs:
       - name: Validate SBOM file exists
         id: validate
         run: |
+          # Check if SBOM exists
           if [ ! -f "${{ github.event.repository.name }}-sbom.json" ]; then
             echo "::error::SBOM file not found: ${{ github.event.repository.name }}-sbom.json"
             exit 1
           fi
+          # Check if hadolint and dockle reports exist (only for container image input)
+          if [[ -f "${{ github.event.repository.name }}-hadolint.json" ]]; then
+            echo "::set-output name=hadolint_exists::true"
+          else
+            echo "::set-output name=hadolint_exists::false"
+          fi
+          if [[ -f "${{ github.event.repository.name }}-dockle.json" ]]; then
+            echo "::set-output name=dockle_exists::true"
+          else
+            echo "::set-output name=dockle_exists::false"
+          fi
+          # get the base SBOM name
           FILENAME=$(basename "${{ github.event.repository.name }}-sbom.json")
           echo "filename=$FILENAME" >> $GITHUB_OUTPUT
           # Default sbom_definition_name to filename without extension
@@ -629,111 +644,100 @@ jobs:
           echo "version_number=$VERSION_NUMBER" >> $GITHUB_OUTPUT
           echo "SBOM version created successfully."
           
-      - name: Create hadolint attachment        
+      - name: Create hadolint attachment
+        if: ${{ steps.validate.outputs.hadolint_exists == 'true' }}
         id: attachment-hadolint
         env:
           AUTH_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
-          if [ -f "${{ github.event.repository.name }}-hadolint.json" ]; then
-            FILENAME="${{ github.event.repository.name }}-hadolint.json"
-            # Postman: name and file_name; response.id
-            RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/attachment/create" \
-              -H "Content-Type: application/json" \
-              -H "X-Auth-Token: $AUTH_TOKEN" \
-              -d "{\"name\":\"$FILENAME\",\"file_name\":\"$FILENAME\"}")
-            HTTP_CODE=$(echo "$RESP" | tail -n1)
-            BODY=$(echo "$RESP" | sed '$d')
-            if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-              echo "::error::Create attachment failed (HTTP $HTTP_CODE): $BODY"
-              exit 1
-            fi
-            ATTACHMENT_ID=$(echo "$BODY" | jq -r '.id // .data.id // empty')
-            if [ -z "$ATTACHMENT_ID" ] || [ "$ATTACHMENT_ID" = "null" ]; then
-              echo "::error::No attachment id in response: $BODY"
-              exit 1
-            fi
-            echo "attachment_id=$ATTACHMENT_ID" >> $GITHUB_OUTPUT
-            echo "Attachment created: $ATTACHMENT_ID"
-          else
-            echo "::warning::Hadolint report not found, skipping hadolint attachment upload."
+          FILENAME="${{ github.event.repository.name }}-hadolint.json"
+          # Postman: name and file_name; response.id
+          RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/attachment/create" \
+            -H "Content-Type: application/json" \
+            -H "X-Auth-Token: $AUTH_TOKEN" \
+            -d "{\"name\":\"$FILENAME\",\"file_name\":\"$FILENAME\"}")
+          HTTP_CODE=$(echo "$RESP" | tail -n1)
+          BODY=$(echo "$RESP" | sed '$d')
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::Create attachment failed (HTTP $HTTP_CODE): $BODY"
+            exit 1
           fi
+          ATTACHMENT_ID=$(echo "$BODY" | jq -r '.id // .data.id // empty')
+          if [ -z "$ATTACHMENT_ID" ] || [ "$ATTACHMENT_ID" = "null" ]; then
+            echo "::error::No attachment id in response: $BODY"
+            exit 1
+          fi
+          echo "attachment_id=$ATTACHMENT_ID" >> $GITHUB_OUTPUT
+          echo "Attachment created: $ATTACHMENT_ID"
 
       - name: Upload hadolint file to attachment stream
+        if: ${{ steps.validate.outputs.hadolint_exists == 'true' }}
         id: upload-hadolint
         env:
           AUTH_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
-          if [ -f "${{ github.event.repository.name }}-hadolint.json" ]; then
-            FILENAME="${{ github.event.repository.name }}-hadolint.json"
-            ATTACHMENT_ID="${{ steps.attachment-hadolint.outputs.attachment_id }}"
-            RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/attachment/item/${ATTACHMENT_ID}/stream" \
-              -H "X-Auth-Token: $AUTH_TOKEN" \
-              -H "Content-Type: application/json" \
-              --data-binary "@${FILENAME}")
-            HTTP_CODE=$(echo "$RESP" | tail -n1)
-            BODY=$(echo "$RESP" | sed '$d')
-            if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-              echo "::error::Upload failed (HTTP $HTTP_CODE): $BODY"
-              exit 1
-            fi
-            echo "hadolint file uploaded successfully."
-          else
-            echo "::warning::Hadolint report not found, skipping hadolint file upload."
+          FILENAME="${{ github.event.repository.name }}-hadolint.json"
+          ATTACHMENT_ID="${{ steps.attachment-hadolint.outputs.attachment_id }}"
+          RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/attachment/item/${ATTACHMENT_ID}/stream" \
+            -H "X-Auth-Token: $AUTH_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data-binary "@${FILENAME}")
+          HTTP_CODE=$(echo "$RESP" | tail -n1)
+          BODY=$(echo "$RESP" | sed '$d')
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::Upload failed (HTTP $HTTP_CODE): $BODY"
+            exit 1
           fi
+          echo "hadolint file uploaded successfully."
           
       - name: Create dockle attachment
+        if: ${{ steps.validate.outputs.dockle_exists == 'true' }}
         id: attachment-dockle
         env:
           AUTH_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
-          if [ -f "${{ github.event.repository.name }}-dockle.json" ]; then
-            FILENAME="${{ github.event.repository.name }}-dockle.json"
-            # Postman: name and file_name; response.id
-            RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/attachment/create" \
-              -H "Content-Type: application/json" \
-              -H "X-Auth-Token: $AUTH_TOKEN" \
-              -d "{\"name\":\"$FILENAME\",\"file_name\":\"$FILENAME\"}")
-            HTTP_CODE=$(echo "$RESP" | tail -n1)
-            BODY=$(echo "$RESP" | sed '$d')
-            if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-              echo "::error::Create attachment failed (HTTP $HTTP_CODE): $BODY"
-              exit 1
-            fi
-            ATTACHMENT_ID=$(echo "$BODY" | jq -r '.id // .data.id // empty')
-            if [ -z "$ATTACHMENT_ID" ] || [ "$ATTACHMENT_ID" = "null" ]; then
-              echo "::error::No attachment id in response: $BODY"
-              exit 1
-            fi
-            echo "attachment_id=$ATTACHMENT_ID" >> $GITHUB_OUTPUT
-            echo "Attachment created: $ATTACHMENT_ID"
-          else
-            echo "::warning::Dockle report not found, skipping dockle attachment upload."
+          FILENAME="${{ github.event.repository.name }}-dockle.json"
+          # Postman: name and file_name; response.id
+          RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/attachment/create" \
+            -H "Content-Type: application/json" \
+            -H "X-Auth-Token: $AUTH_TOKEN" \
+            -d "{\"name\":\"$FILENAME\",\"file_name\":\"$FILENAME\"}")
+          HTTP_CODE=$(echo "$RESP" | tail -n1)
+          BODY=$(echo "$RESP" | sed '$d')
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::Create attachment failed (HTTP $HTTP_CODE): $BODY"
+            exit 1
           fi
+          ATTACHMENT_ID=$(echo "$BODY" | jq -r '.id // .data.id // empty')
+          if [ -z "$ATTACHMENT_ID" ] || [ "$ATTACHMENT_ID" = "null" ]; then
+            echo "::error::No attachment id in response: $BODY"
+            exit 1
+          fi
+          echo "attachment_id=$ATTACHMENT_ID" >> $GITHUB_OUTPUT
+          echo "Attachment created: $ATTACHMENT_ID"
 
       - name: Upload dockle file to attachment stream
+        if: ${{ steps.validate.outputs.dockle_exists == 'true' }}
         id: upload-dockle
         env:
           AUTH_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
-          if [ -f "${{ github.event.repository.name }}-dockle.json" ]; then
-            FILENAME="${{ github.event.repository.name }}-dockle.json"
-            ATTACHMENT_ID="${{ steps.attachment-dockle.outputs.attachment_id }}"
-            RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/attachment/item/${ATTACHMENT_ID}/stream" \
-              -H "X-Auth-Token: $AUTH_TOKEN" \
-              -H "Content-Type: application/json" \
-              --data-binary "@${FILENAME}")
-            HTTP_CODE=$(echo "$RESP" | tail -n1)
-            BODY=$(echo "$RESP" | sed '$d')
-            if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-              echo "::error::Upload failed (HTTP $HTTP_CODE): $BODY"
-              exit 1
-            fi
-            echo "dockle file uploaded successfully."
-          else
-            echo "::warning::Dockle report not found, skipping dockle file upload."
+          FILENAME="${{ github.event.repository.name }}-dockle.json"
+          ATTACHMENT_ID="${{ steps.attachment-dockle.outputs.attachment_id }}"
+          RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/attachment/item/${ATTACHMENT_ID}/stream" \
+            -H "X-Auth-Token: $AUTH_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data-binary "@${FILENAME}")
+          HTTP_CODE=$(echo "$RESP" | tail -n1)
+          BODY=$(echo "$RESP" | sed '$d')
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::Upload failed (HTTP $HTTP_CODE): $BODY"
+            exit 1
           fi
+          echo "dockle file uploaded successfully."
 
       - name: Upload Container Findings to SBOM Version
+        if: ${{ steps.validate.outputs.dockle_exists == 'true' && steps.validate.outputs.hadolint_exists == 'true' }}
         id: container_findings
         env:
           AUTH_TOKEN: ${{ steps.auth.outputs.token }}
