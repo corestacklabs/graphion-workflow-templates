@@ -203,11 +203,13 @@ jobs:
           {
             echo "## SBOM Creation and Scan complete"
             echo "- **SBOM Artifact:** ${{ github.event.repository.name }}-sbom.json"
-            if: ${{ inputs.IMAGE != '' }}; then
+          } >> $GITHUB_STEP_SUMMARY
+          if: ${{ inputs.IMAGE != '' }}; then
+            {
               echo "- **Dockle Artifact:** ${{ github.event.repository.name }}-dockle.json"
               echo "- **Hadolint Artifact:** ${{ github.event.repository.name }}-hadolint.json"
-            fi
-          } >> $GITHUB_STEP_SUMMARY
+            } >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: Generate Grype Summary
         run: |
