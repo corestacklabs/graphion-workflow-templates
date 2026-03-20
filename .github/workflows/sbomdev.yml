@@ -769,9 +769,8 @@ jobs:
             echo "::error::Upload Container Findings failed (HTTP $HTTP_CODE): $RESP_BODY"
             exit 1
           fi
-          # ATTACHMENT_ID=$(echo "$RESP_BODY" | jq -r '.data.attachment_id // .attachment_id // empty')
-          # echo "attachment_id=$ATTACHMENT_ID" >> $GITHUB_OUTPUT
-          echo "Response: $RESP_BODY" >> $GITHUB_OUTPUT
+          ATTACHMENT_ID=$(echo "$RESP_BODY" | jq -r '.[0].attachment_id')
+          echo "attachment_id=$ATTACHMENT_ID" >> $GITHUB_OUTPUT
           echo "Container findings uploaded successfully."
 
       - name: Summary
