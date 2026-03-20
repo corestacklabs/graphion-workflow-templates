@@ -22,14 +22,23 @@ The following secrets must be available in the client's organizational secrets. 
 
 ### Inputs
 
+#### Inputs for Syft SBOM Creation
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `FILE` | String | FILE or PATH or IMAGE | Path to input file for SBOM generation (e.g. Dockerfile or binary) - mutually exclusive with IMAGE and PATH |
+| `PATH` | String | FILE or PATH or IMAGE | Path to directory for SBOM generation (e.g. folder holding package.json and /src directory) - mutually exclusive with IMAGE and FILE |
+| `IMAGE` | String | FILE or PATH or IMAGE | Container image reference for SBOM generation  (e.g. myregistry/myapp:1.0) - mutually exclusive with PATH and FILE |
+
+#### Inputs for Hadolint/Dockle Container Scanning (only if `IMAGE` is used)
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `REGISTRY_USERNAME` | String |  No | | Username for container registry |
+| `REGISTRY_REGION` | String |  No | | Region for container registry - **only for AWS ECR** |
+| `dockerfile_path` | String |  No | ./dockerfile | Path to Dockerfile for Hadolint analysis |
+
+#### Inputs for CoreStack to Upload Scan Results
 | Name | Type | Required | Unique | Default | Description |
 |---|---|---|---|---|---|
-| `FILE` | String | FILE or PATH or IMAGE | No | | Path to input file for SBOM generation (e.g. Dockerfile or binary) - mutually exclusive with IMAGE and PATH |
-| `PATH` | String | FILE or PATH or IMAGE | No | | Path to directory for SBOM generation (e.g. folder holding package.json and /src directory) - mutually exclusive with IMAGE and FILE |
-| `IMAGE` | String | FILE or PATH or IMAGE | No | | Container image reference for SBOM generation  (e.g. myregistry/myapp:1.0) - mutually exclusive with PATH and FILE |
-| `REGISTRY_USERNAME` | String | No | No | | Username for container registry - only if using IMAGE |
-| `REGISTRY_REGION` | String | No | No | | Region for container registry - only if using IMAGE and only for ECR |
-| `dockerfile_path` | String | No | No | ./dockerfile | Path to Dockerfile for hadolint analysis - used only with IMAGE |
 | `project_name` | String | Yes | Yes | | AppSecOps project name (e.g. Payment Service) - used to resolve project_id |
 | `sbom_definition_name` | String | No | Yes | repo name | Name for the SBOM definition (defaults to filename without extension) |
 | `build_id` | String | No | Yes | 1.0.1 | Build/version identifier (defaults to github.run_id-github.run_attempts) - must be unique |
