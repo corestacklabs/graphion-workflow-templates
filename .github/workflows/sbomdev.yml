@@ -157,7 +157,7 @@ jobs:
 
       - name: Log in to Docker Hub
         if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && (steps.registry.outputs.value == 'docker.io' || steps.registry.outputs.value == 'ghcr.io') }}
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ inputs.REGISTRY_USERNAME }}
           password: ${{ secrets.REGISTRY_PASSWORD }}
