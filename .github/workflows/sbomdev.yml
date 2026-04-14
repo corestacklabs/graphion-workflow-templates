@@ -105,18 +105,18 @@ jobs:
          output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
          
       - name: Create KICS SBOM With Path
-        if: ${{ inputs.PATH != '' && inputs.terraform_scan == 'true'}}        
+        if: ${{ inputs.PATH != '' && inputs.terraform_scan == 'true'}}
         uses: Checkmarx/kics-github-action@v2.1.20
         with:
          path: ${{ inputs.PATH }}
-         output_formats: 'cyclonedx,json'
+         output_formats: 'cyclonedx'
          output_path: '.'
          ignore_on_exit: 'all'
-         
+
       - name: Rename KICS SBOM
-        if: ${{ inputs.PATH != '' && inputs.terraform_scan == 'true'}}    
+        if: ${{ inputs.PATH != '' && inputs.terraform_scan == 'true'}}
         run: |
-          mv results.json "${{ github.event.repository.name }}-sbom.cdx.json"
+          mv results.cyclonedx "${{ github.event.repository.name }}-sbom.cdx.json"
 
       - name: Run Grype Scan
         run: |
