@@ -118,6 +118,12 @@ jobs:
         run: |
           mv cyclonedx-results.xml "${{ github.event.repository.name }}-sbom.cdx.json"
 
+      - name: Upload KICS Artifact
+        uses: actions/upload-artifact@v6
+        with:
+            name: kics-output-cdx
+            path: ${{ github.event.repository.name }}-sbom.cdx.json
+
       - name: Run Grype Scan
         run: |
             curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
