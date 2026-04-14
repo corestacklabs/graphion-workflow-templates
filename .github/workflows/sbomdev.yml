@@ -109,33 +109,34 @@ jobs:
         uses: Checkmarx/kics-github-action@v2.1.20
         with:
          path: ${{ inputs.PATH }}
-         output_formats: 'json'
+         output_formats: 'cyclonedx,json'
          output_path: '.'
-         ignore_on_exit: 'all'         
-          
+         ignore_on_exit: 'all'
+
       - name: Upload KICS Artifact
         if: ${{ inputs.PATH != '' && inputs.terraform_scan == 'true'}}
         uses: actions/upload-artifact@v6
         with:
-            name: kics-output-json
-            path: results.json
+            name: kics-output-xml
+            path: cyclonedx-results.xml
 
       - name: Install CycloneDX CLI
         if: ${{ inputs.PATH != '' && inputs.terraform_scan == 'true'}}
         run: |
-          curl -Lo cyclonedx-cli https://github.com
+          CDXCLI_VERSION=$(curl -s https://api.github.com/repos/CycloneDX/cyclonedx-cli/releases/latest | jq -r '.tag_name')
+          curl -sSfL "https://github.com/CycloneDX/cyclonedx-cli/releases/download/${CDXCLI_VERSION}/cyclonedx-linux-x64" -o cyclonedx-cli
           chmod +x cyclonedx-cli
 
-      - name: Convert JSON SBOM to CycloneDX
+      - name: Convert KICS CycloneDX XML to JSON
         if: ${{ inputs.PATH != '' && inputs.terraform_scan == 'true'}}
         run: |
           ./cyclonedx-cli convert \
-            --input-file ./results.json \
+            --input-file ./cyclonedx-results.xml \
             --output-file ./${{ github.event.repository.name }}-sbom.cdx.json \
             --output-format json \
-            --output-version v1.6
-          
-      - name: Upload CycoloneDX Artifact
+            --output-version v1_6
+
+      - name: Upload CycloneDX Artifact
         if: ${{ inputs.PATH != '' && inputs.terraform_scan == 'true'}}
         uses: actions/upload-artifact@v6
         with:
