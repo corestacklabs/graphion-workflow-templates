@@ -109,14 +109,14 @@ jobs:
         uses: Checkmarx/kics-github-action@v2.1.20
         with:
          path: ${{ inputs.PATH }}
-         output_formats: 'cyclonedx'
+         output_formats: 'cyclonedx-json'
          output_path: '.'
          ignore_on_exit: 'all'
 
       - name: Rename KICS SBOM
         if: ${{ inputs.PATH != '' && inputs.terraform_scan == 'true'}}
         run: |
-          mv cyclonedx-results.xml "${{ github.event.repository.name }}-sbom.cdx.json"
+          mv results.json "${{ github.event.repository.name }}-sbom.cdx.json"
 
       - name: Upload KICS Artifact
         uses: actions/upload-artifact@v6
