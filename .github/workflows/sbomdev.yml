@@ -109,16 +109,17 @@ jobs:
         uses: Checkmarx/kics-github-action@v2.1.20
         with:
          path: ${{ inputs.PATH }}
-         output_formats: 'cyclonedx,json'
+         output_formats: 'json'
          output_path: '.'
          ignore_on_exit: 'all'
+         bom: 'true'
 
       - name: Upload KICS Artifact
         if: ${{ inputs.PATH != '' && inputs.terraform_scan == 'true'}}
         uses: actions/upload-artifact@v6
         with:
-            name: kics-output-xml
-            path: cyclonedx-results.xml
+            name: kics-output-json
+            path: results.json
 
       - name: Install CycloneDX CLI
         if: ${{ inputs.PATH != '' && inputs.terraform_scan == 'true'}}
@@ -131,7 +132,7 @@ jobs:
         if: ${{ inputs.PATH != '' && inputs.terraform_scan == 'true'}}
         run: |
           ./cyclonedx-cli convert \
-            --input-file ./cyclonedx-results.xml \
+            --input-file ./results.json \
             --output-file ./${{ github.event.repository.name }}-sbom.cdx.json \
             --output-format json \
             --output-version v1_6
