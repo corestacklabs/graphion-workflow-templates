@@ -116,7 +116,7 @@ jobs:
       - name: Rename KICS SBOM
         if: ${{ inputs.PATH != '' && inputs.terraform_scan == 'true'}}
         run: |
-          mv results.cyclonedx "${{ github.event.repository.name }}-sbom.cdx.json"
+          mv cyclonedx-results.xml "${{ github.event.repository.name }}-sbom.cdx.json"
 
       - name: Run Grype Scan
         run: |
