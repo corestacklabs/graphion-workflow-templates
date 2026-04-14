@@ -121,33 +121,10 @@ jobs:
             name: kics-output-xml
             path: cyclonedx-results.xml
 
-      - name: Install CycloneDX CLI
-        if: ${{ inputs.PATH != '' && inputs.terraform_scan == 'true'}}
-        run: |
-          CDXCLI_VERSION=$(curl -s https://api.github.com/repos/CycloneDX/cyclonedx-cli/releases/latest | jq -r '.tag_name')
-          curl -sSfL "https://github.com/CycloneDX/cyclonedx-cli/releases/download/${CDXCLI_VERSION}/cyclonedx-linux-x64" -o cyclonedx-cli
-          chmod +x cyclonedx-cli
-
-      - name: Convert KICS CycloneDX XML to JSON
-        if: ${{ inputs.PATH != '' && inputs.terraform_scan == 'true'}}
-        run: |
-          ./cyclonedx-cli convert \
-            --input-file ./cyclonedx-results.xml \
-            --output-file ./${{ github.event.repository.name }}-sbom.cdx.json \
-            --output-format json \
-            --output-version v1_6
-
-      - name: Upload CycloneDX Artifact
-        if: ${{ inputs.PATH != '' && inputs.terraform_scan == 'true'}}
-        uses: actions/upload-artifact@v6
-        with:
-            name: kics-output-cdx
-            path: ${{ github.event.repository.name }}-sbom.cdx.json
-
       - name: Run Grype Scan
         run: |
             curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
-            grype sbom:"${{ github.event.repository.name }}-sbom.cdx.json" -o cyclonedx-json > ${{ github.event.repository.name }}-sbom.json
+            grype sbom:"cyclonedx-results.xml" -o cyclonedx-json > ${{ github.event.repository.name }}-sbom.json
 
       - name: Upload Grype Artifact
         uses: actions/upload-artifact@v6
