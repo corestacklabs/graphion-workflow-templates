@@ -111,8 +111,15 @@ jobs:
          path: ${{ inputs.PATH }}
          output_formats: 'json'
          output_path: '.'
-         ignore_on_exit: 'all'
-         
+         ignore_on_exit: 'all'         
+          
+      - name: Upload KICS Artifact
+        if: ${{ inputs.PATH != '' && inputs.terraform_scan == 'true'}}
+        uses: actions/upload-artifact@v6
+        with:
+            name: kics-output-json
+            path: results.json
+
       - name: Install CycloneDX CLI
         if: ${{ inputs.PATH != '' && inputs.terraform_scan == 'true'}}
         run: |
@@ -128,7 +135,7 @@ jobs:
             --output-format json \
             --output-version v1.6
           
-      - name: Upload KICS Artifact
+      - name: Upload CycoloneDX Artifact
         if: ${{ inputs.PATH != '' && inputs.terraform_scan == 'true'}}
         uses: actions/upload-artifact@v6
         with:
