@@ -92,7 +92,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
             name: kics-output-json
-            path: kics_results.json
+            path: results.json
 
       - name: KICS Analysis
         id: kics-analysis
