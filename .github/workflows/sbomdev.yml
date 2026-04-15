@@ -146,7 +146,7 @@ jobs:
             exit 1
           fi
           if [[ "${{ inputs.terraform_scan }}" != "true" && "${{ inputs.skip_upload }}" != "true" ]]; then
-            if [[ -z "${{ inputs.FILE  }}" && -z "${{ inputs.PATH  }}" != "true" && -z "${{ inputs.IMAGE  }}" ]]; then
+            if [[ -z "${{ inputs.FILE  }}" && -z "${{ inputs.PATH  }}" && -z "${{ inputs.IMAGE  }}" ]]; then
               echo "Error: Either FILE, PATH, OR IMAGE is required."
               exit 1
             fi
