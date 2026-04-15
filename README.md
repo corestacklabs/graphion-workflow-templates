@@ -22,6 +22,11 @@ The following secrets must be available in the client's organizational secrets. 
 
 ### Inputs
 
+#### Inputs for KICS Terraform Scan
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `terraform_scan` | String | No | 'false' | Run KICS Terraform scan **instead** of SBOM generation and upload (true/false) |
+
 #### Inputs for Syft SBOM Creation
 | Name | Type | Required | Description |
 |---|---|---|---|

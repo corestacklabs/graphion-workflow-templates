@@ -39,7 +39,7 @@ on:
         required: false
         default: './dockerfile'
       terraform_scan:
-        description: 'Whether to run Checkmarx KICS scan for Terraform files (true/false, defaults to false). If true, PATH input is required and primary language of the repo must be HCL.'
+        description: 'Run KICS Terraform scan instead of SBOM generation and upload (true/false)'
         type: string
         required: false
         default: 'false'
@@ -72,13 +72,63 @@ env:
   API_BASE: ${{ inputs.api_base_url || 'https://api.corestack.io' }}
       
 jobs:  
+  scan-terraform:
+    if: ${{ inputs.terraform_scan == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Scan Path with KICS
+        uses: Checkmarx/kics-github-action@v2.1.20
+        with:
+         path: ${{ inputs.PATH }}
+         output_formats: 'json'
+         output_path: '.'
+         ignore_on_exit: 'all'
+         bom: 'true'
+
+      - name: Upload KICS Artifact
+        uses: actions/upload-artifact@v6
+        with:
+            name: kics-output-json
+            path: kics_results.json
+
+      - name: KICS Analysis
+        id: kics-analysis
+        run: |
+          set +e
+          CRITICAL=$(jq '.severity_counters.CRITICAL // 0' results.json)
+          HIGH=$(jq '.severity_counters.HIGH // 0' results.json)
+          MEDIUM=$(jq '.severity_counters.MEDIUM // 0' results.json)
+          LOW=$(jq '.severity_counters.LOW // 0' results.json)
+          set -e
+          echo "Criticals=$CRITICAL" >> $GITHUB_OUTPUT
+          echo "Highs=$HIGH" >> $GITHUB_OUTPUT
+          echo "Mediums=$MEDIUM" >> $GITHUB_OUTPUT
+          echo "Lows=$LOW" >> $GITHUB_OUTPUT
+          echo "KICS analysis complete: $CRITICAL critical, $HIGH high, $MEDIUM medium, $LOW low findings."
+
+      - name: Generate KICS Summary
+        run: |
+          {
+            echo "### KICS IaC Scan Summary"
+            echo "| Severity | Count |"
+            echo "|---|---|"
+            echo "| Critical | ${{ steps.kics-analysis.outputs.Criticals }} |"
+            echo "| High | ${{ steps.kics-analysis.outputs.Highs }} |"
+            echo "| Medium | ${{ steps.kics-analysis.outputs.Mediums }} |"
+            echo "| Low | ${{ steps.kics-analysis.outputs.Lows }} |"
+          } >> $GITHUB_STEP_SUMMARY
+
   create-sbom-and-scan:
+    if: ${{ inputs.terraform_scan != 'true'}}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
         
-      - name: Create SBOM With Image
+      - name: Create SBOM With Syft Image Scan
         if: ${{ inputs.IMAGE != '' }}
         uses: anchore/sbom-action@v0
         with:
@@ -88,7 +138,7 @@ jobs:
          format: cyclonedx-json
          output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
 
-      - name: Create SBOM With File
+      - name: Create SBOM With Syft File Scan
         if: ${{ inputs.FILE != '' }}
         uses: anchore/sbom-action@v0
         with:
@@ -96,35 +146,18 @@ jobs:
          format: cyclonedx-json
          output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
 
-      - name: Create Syft SBOM With Path
-        if: ${{ inputs.PATH != '' && inputs.terraform_scan != 'true'}}
+      - name: Create SBOM With Syft Path Scan
+        if: ${{ inputs.PATH != '' }}
         uses: anchore/sbom-action@v0
         with:
          path: ${{ inputs.PATH }}
          format: cyclonedx-json
          output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
          
-      - name: Create KICS SBOM With Path
-        if: ${{ inputs.PATH != '' && inputs.terraform_scan == 'true'}}
-        uses: Checkmarx/kics-github-action@v2.1.20
-        with:
-         path: ${{ inputs.PATH }}
-         output_formats: 'cyclonedx,json'
-         output_path: '.'
-         ignore_on_exit: 'all'
-         bom: 'true'
-
-      - name: Upload KICS Artifact
-        if: ${{ inputs.PATH != '' && inputs.terraform_scan == 'true'}}
-        uses: actions/upload-artifact@v6
-        with:
-            name: kics-output-xml
-            path: cyclonedx-results.xml
-
       - name: Run Grype Scan
         run: |
             curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
-            grype sbom:"cyclonedx-results.xml" -o cyclonedx-json > ${{ github.event.repository.name }}-sbom.json
+            grype sbom:"${{ github.event.repository.name }}-sbom.cdx.json" -o cyclonedx-json > ${{ github.event.repository.name }}-sbom.json
 
       - name: Upload Grype Artifact
         uses: actions/upload-artifact@v6
@@ -255,6 +288,7 @@ jobs:
           } >> $GITHUB_STEP_SUMMARY
 
   upload-sbom:
+    if: ${{ inputs.terraform_scan != 'true'}}
     needs: create-sbom-and-scan
     runs-on: ubuntu-latest
     steps:      
