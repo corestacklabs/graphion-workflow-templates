@@ -43,10 +43,15 @@ on:
         type: string
         required: false
         default: 'false'
+      skip_upload:
+        description: 'Skip SBOM upload to CoreStack (true/false) - for testing or if you only want to generate the SBOM artifact without uploading'
+        type: string
+        required: false
+        default: 'false'
       project_name:
         description: 'AppSecOps project name (e.g. Payment Service) - used to resolve project_id'
         type: string
-        required: true
+        required: false
       sbom_definition_name:
         description: 'Name for the SBOM definition (defaults to filename without extension)'
         type: string
@@ -76,6 +81,14 @@ jobs:
     if: ${{ inputs.terraform_scan == 'true' }}
     runs-on: ubuntu-latest
     steps:
+      - name: Validate inputs
+        shell: bash
+        run: |
+          if [[ -z "${{ inputs.PATH  }}" ]]; then
+            echo "Error: 'PATH' is required for Terraform scans."
+            exit 1
+          fi
+
       - name: Checkout code
         uses: actions/checkout@v6
 
@@ -125,6 +138,28 @@ jobs:
     if: ${{ inputs.terraform_scan != 'true'}}
     runs-on: ubuntu-latest
     steps:
+      - name: Validate inputs
+        shell: bash
+        run: |
+          if [[ "${{ inputs.terraform_scan }}" != "true" && "${{ inputs.skip_upload }}" != "true" && -z "${{ inputs.project_name  }}" ]]; then
+            echo "Error: 'project_name' is required."
+            exit 1
+          fi
+          if [[ "${{ inputs.terraform_scan }}" != "true" && "${{ inputs.skip_upload }}" != "true" ]]; then
+            if [[ -z "${{ inputs.FILE  }}" && -z "${{ inputs.PATH  }}" != "true" && -z "${{ inputs.IMAGE  }}" ]]; then
+              echo "Error: Either FILE, PATH, OR IMAGE is required."
+              exit 1
+            fi
+          fi
+          if [[ -n "${{ inputs.IMAGE  }}" && -z "${{ inputs.REGISTRY_USERNAME  }}" ]]; then
+            echo "Error: REGISTRY_USERNAME is required for image scans."
+            exit 1
+          fi
+          if [[ -n "${{ inputs.IMAGE  }}" && -z "${{ secrets.REGISTRY_PASSWORD  }}" ]]; then
+            echo "Error: REGISTRY_PASSWORD is required for image scans."
+            exit 1
+          fi
+
       - name: Checkout code
         uses: actions/checkout@v6
         
@@ -288,7 +323,7 @@ jobs:
           } >> $GITHUB_STEP_SUMMARY
 
   upload-sbom:
-    if: ${{ inputs.terraform_scan != 'true'}}
+    if: ${{ inputs.terraform_scan != 'true' && inputs.skip_upload != 'true' }}
     needs: create-sbom-and-scan
     runs-on: ubuntu-latest
     steps:      

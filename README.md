@@ -27,6 +27,11 @@ The following secrets must be available in the client's organizational secrets. 
 |---|---|---|---|---|
 | `terraform_scan` | String | No | 'false' | Run KICS Terraform scan **instead** of SBOM generation and upload (true/false) |
 
+#### Inputs for Development workflows
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `skip_upload` | String | No | 'false' | Skip SBOM upload to CoreStack (true/false) - for testing or if you only want to generate the SBOM artifact without uploading |
+
 #### Inputs for Syft SBOM Creation
 | Name | Type | Required | Description |
 |---|---|---|---|
