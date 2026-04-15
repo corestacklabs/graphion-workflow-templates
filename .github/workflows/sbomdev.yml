@@ -5,10 +5,10 @@ on:
     secrets:
       CORESTACK_ACCESS_KEY:
         description: "API Access key from a CoreStack user"
-        required: true
+        required: false
       CORESTACK_SECRET_KEY:
         description: "API Secret key from a CoreStack user"
-        required: true
+        required: false
       REGISTRY_PASSWORD:
         description: "Password or token for container registry (if using IMAGE input)"
         required: false
@@ -326,7 +326,19 @@ jobs:
     if: ${{ inputs.terraform_scan != 'true' && inputs.skip_upload != 'true' }}
     needs: create-sbom-and-scan
     runs-on: ubuntu-latest
-    steps:      
+    steps:
+      - name: Validate inputs
+        shell: bash
+        run: |
+          if [[ -z "${{ secrets.CORESTACK_ACCESS_KEY }}" ]]; then
+            echo "Error: 'CORESTACK_ACCESS_KEY' is required for SBOM upload."
+            exit 1
+          fi
+          if [[ -z "${{ secrets.CORESTACK_SECRET_KEY }}" ]]; then
+            echo "Error: 'CORESTACK_SECRET_KEY' is required for SBOM upload."
+            exit 1
+          fi
+
       - name: Download Artifacts
         uses: actions/download-artifact@v8
         with:
