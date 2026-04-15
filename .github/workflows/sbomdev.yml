@@ -214,7 +214,7 @@ jobs:
           echo "Grype analysis complete: $CRITICAL_CVE critical, $HIGH_CVE high, $MEDIUM_CVE medium vulnerabilities found."
 
       - name: Lint Dockerfile with Hadolint
-        if: ${{ inputs.IMAGE != '' }}
+        if: ${{ inputs.IMAGE != '' && inputs.dockerfile_path != '' }}
         id: hadolint
         uses: hadolint/hadolint-action@v3.1.0
         with:
@@ -223,7 +223,7 @@ jobs:
           output-file: "${{ github.event.repository.name }}-hadolint.json"
 
       - name: Upload Hadolint Artifact
-        if: ${{ inputs.IMAGE != '' }}
+        if: ${{ inputs.IMAGE != '' && inputs.dockerfile_path != '' }}
         uses: actions/upload-artifact@v6
         with:
           name: hadolint-json-report
