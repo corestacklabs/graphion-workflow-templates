@@ -38,11 +38,11 @@ on:
         type: string
         required: false
         default: './dockerfile'
-      terraform_scan:
-        description: 'Run KICS Terraform scan instead of SBOM generation and upload (true/false)'
+      KICS_scan_type:
+        description: 'Run KICS scan instead of SBOM generation and upload (Ansible, AzureResourceManager, CloudFormation, Dockerfile, Kubernetes, OpenAPI, Terraform'
         type: string
         required: false
-        default: 'false'
+        default: ''
       skip_upload:
         description: 'Skip SBOM upload to CoreStack (true/false) - for testing or if you only want to generate the SBOM artifact without uploading'
         type: string
@@ -78,7 +78,7 @@ env:
       
 jobs:  
   scan-terraform:
-    if: ${{ inputs.terraform_scan == 'true' }}
+    if: ${{ inputs.KICS_scan_type != '' }}
     runs-on: ubuntu-latest
     steps:
       - name: Validate inputs
@@ -99,7 +99,7 @@ jobs:
          output_formats: 'json'
          output_path: '.'
          ignore_on_exit: 'all'
-         bom: 'true'
+         enable_jobs_summary: 'true'
 
       - name: Upload KICS Artifact
         uses: actions/upload-artifact@v6
@@ -107,45 +107,18 @@ jobs:
             name: kics-output-json
             path: results.json
 
-      - name: KICS Analysis
-        id: kics-analysis
-        run: |
-          set +e
-          CRITICAL=$(jq '.severity_counters.CRITICAL // 0' results.json)
-          HIGH=$(jq '.severity_counters.HIGH // 0' results.json)
-          MEDIUM=$(jq '.severity_counters.MEDIUM // 0' results.json)
-          LOW=$(jq '.severity_counters.LOW // 0' results.json)
-          set -e
-          echo "Criticals=$CRITICAL" >> $GITHUB_OUTPUT
-          echo "Highs=$HIGH" >> $GITHUB_OUTPUT
-          echo "Mediums=$MEDIUM" >> $GITHUB_OUTPUT
-          echo "Lows=$LOW" >> $GITHUB_OUTPUT
-          echo "KICS analysis complete: $CRITICAL critical, $HIGH high, $MEDIUM medium, $LOW low findings."
-
-      - name: Generate KICS Summary
-        run: |
-          {
-            echo "### KICS IaC Scan Summary"
-            echo "| Severity | Count |"
-            echo "|---|---|"
-            echo "| Critical | ${{ steps.kics-analysis.outputs.Criticals }} |"
-            echo "| High | ${{ steps.kics-analysis.outputs.Highs }} |"
-            echo "| Medium | ${{ steps.kics-analysis.outputs.Mediums }} |"
-            echo "| Low | ${{ steps.kics-analysis.outputs.Lows }} |"
-          } >> $GITHUB_STEP_SUMMARY
-
   create-sbom-and-scan:
-    if: ${{ inputs.terraform_scan != 'true'}}
+    if: ${{ inputs.KICS_scan_type== ''}}
     runs-on: ubuntu-latest
     steps:
       - name: Validate inputs
         shell: bash
         run: |
-          if [[ "${{ inputs.terraform_scan }}" != "true" && "${{ inputs.skip_upload }}" != "true" && -z "${{ inputs.project_name  }}" ]]; then
+          if [[ "${{ inputs.KICS_scan_type }}" == "" && "${{ inputs.skip_upload }}" != "true" && -z "${{ inputs.project_name  }}" ]]; then
             echo "Error: 'project_name' is required."
             exit 1
           fi
-          if [[ "${{ inputs.terraform_scan }}" != "true" && "${{ inputs.skip_upload }}" != "true" ]]; then
+          if [[ "${{ inputs.KICS_scan_type }}" == "" && "${{ inputs.skip_upload }}" != "true" ]]; then
             if [[ -z "${{ inputs.FILE  }}" && -z "${{ inputs.PATH  }}" && -z "${{ inputs.IMAGE  }}" ]]; then
               echo "Error: Either FILE, PATH, OR IMAGE is required."
               exit 1
@@ -323,7 +296,7 @@ jobs:
           } >> $GITHUB_STEP_SUMMARY
 
   upload-sbom:
-    if: ${{ inputs.terraform_scan != 'true' && inputs.skip_upload != 'true' }}
+    if: ${{ inputs.KICS_scan_type== '' && inputs.skip_upload != 'true' }}
     needs: create-sbom-and-scan
     runs-on: ubuntu-latest
     steps:
