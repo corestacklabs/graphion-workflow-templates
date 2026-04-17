@@ -39,7 +39,7 @@ on:
         required: false
         default: './dockerfile'
       KICS_scan_type:
-        description: 'Run KICS scan instead of SBOM generation and upload (Ansible, AzureResourceManager, CloudFormation, Dockerfile, Kubernetes, OpenAPI, Terraform'
+        description: 'Run KICS scan instead of SBOM generation and upload (Ansible, AzureResourceManager, CloudFormation, Dockerfile, Kubernetes, OpenAPI, Terraform)'
         type: string
         required: false
         default: ''

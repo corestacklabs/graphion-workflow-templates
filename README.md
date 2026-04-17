@@ -22,10 +22,10 @@ The following secrets must be available in the client's organizational secrets. 
 
 ### Inputs
 
-#### Inputs for KICS Terraform Scan
+#### Inputs for KICS standalone Scan
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `terraform_scan` | String | No | 'false' | Run KICS Terraform scan **instead** of SBOM generation and upload (true/false) |
+| `KICS_scan_type` | String | No | 'false' | Run KICS Terraform scan **instead** of SBOM generation and upload (Ansible, AzureResourceManager, CloudFormation, Dockerfile, Kubernetes, OpenAPI, Terraform) |
 
 #### Inputs for Development workflows
 | Name | Type | Required | Default | Description |
