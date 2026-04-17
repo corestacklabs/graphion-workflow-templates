@@ -25,7 +25,8 @@ The following secrets must be available in the client's organizational secrets. 
 #### Inputs for KICS standalone Scan
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `KICS_scan_type` | String | No | 'false' | Run KICS Terraform scan **instead** of SBOM generation and upload (Ansible, AzureResourceManager, CloudFormation, Dockerfile, Kubernetes, OpenAPI, Terraform) |
+| `KICS_scan_type` | String | No | '' | Run KICS Terraform scan **instead** of SBOM generation and upload (Ansible, AzureResourceManager, CloudFormation, Dockerfile, Kubernetes, OpenAPI, Terraform) |
+| `KICS_upload` | String | No | 'false' | When running a KICS scan, upload the results to the GitHub Security tab (true/false) |
 
 #### Inputs for Development workflows
 | Name | Type | Required | Default | Description |

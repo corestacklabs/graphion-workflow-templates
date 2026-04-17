@@ -43,6 +43,11 @@ on:
         type: string
         required: false
         default: ''
+      KICS_upload:
+        description: 'When running a KICS scan, upload the results to the GitHub Security tab (true/false)'
+        type: string
+        required: false
+        default: 'false'
       skip_upload:
         description: 'Skip SBOM upload to CoreStack (true/false) - for testing or if you only want to generate the SBOM artifact without uploading'
         type: string
@@ -96,10 +101,16 @@ jobs:
         uses: Checkmarx/kics-github-action@v2.1.20
         with:
          path: ${{ inputs.PATH }}
-         output_formats: 'json'
+         output_formats: 'sarif,json'
          output_path: '.'
          ignore_on_exit: 'all'
          enable_jobs_summary: 'true'
+         
+      - name: Upload to GitHub Security Tab
+        if: ${{ inputs.KICS_upload == 'true' }}
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
 
       - name: Upload KICS Artifact
         uses: actions/upload-artifact@v6
