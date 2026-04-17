@@ -97,29 +97,20 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      # - name: Scan Path with KICS
-      #   uses: Checkmarx/kics-github-action@v2.1.20
-      #   with:
-      #    path: ${{ inputs.PATH }}
-      #    output_formats: 'sarif,json'
-      #    output_path: '.'
-      #    ignore_on_exit: 'all'
-      #    enable_jobs_summary: 'true'
-         
-      - name: Run Trivy vulnerability scanner in IaC mode
-        uses: aquasecurity/trivy-action@0.35.0
+      - name: Scan Path with KICS
+        uses: Checkmarx/kics-github-action@v2.1.20
         with:
-          scan-type: 'config'
-          scan-ref: ${{ inputs.PATH }}
-          format: 'json'
-          output: 'trivy-results.json'
-          scanners: 'vuln,secret,misconfig'
-         
-      # - name: Upload to GitHub Security Tab
-      #   if: ${{ inputs.KICS_upload == 'true' }}
-      #   uses: github/codeql-action/upload-sarif@v4
-      #   with:
-      #     sarif_file: results.sarif
+         path: ${{ inputs.PATH }}
+         output_formats: 'sarif,json'
+         output_path: '.'
+         ignore_on_exit: 'all'
+         enable_jobs_summary: 'true'
+                  
+      - name: Upload to GitHub Security Tab
+        if: ${{ inputs.KICS_upload == 'true' }}
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: results.sarif
 
       - name: Upload KICS Artifact
         uses: actions/upload-artifact@v6
