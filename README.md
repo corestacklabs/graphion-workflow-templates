@@ -27,6 +27,7 @@ The following secrets must be available in the client's organizational secrets. 
 |---|---|---|---|---|
 | `KICS_scan_type` | String | No | '' | Run KICS Terraform scan **instead** of SBOM generation and upload (Ansible, AzureResourceManager, CloudFormation, Dockerfile, Kubernetes, OpenAPI, Terraform) |
 | `KICS_upload` | String | No | 'false' | When running a KICS scan, upload the results to the GitHub Security tab (true/false) |
+* **Advanced Security must be enabled for the `KICS_upload` to work. The workflow will fail otherwise.**
 
 #### Inputs for Development workflows
 | Name | Type | Required | Default | Description |
@@ -78,6 +79,10 @@ The following secrets must be available in the client's organizational secrets. 
 
 In the client or calling workflow, find a point where the SBOM can be created and insert a call-workflow job.  Calling a workflow must be done from a job, not a step so be prepared to create outputs, download artifacts, etc.  The calling workflow does not have to be called on workflow_dispatch, that was easiest for the examples.
 
+### Angular workflow example
+
+`CORESTACK_ACCESS_KEY` and `CORESTACK_SECRET_KEY` secrets and `project_name` input are required to upload the SBOM to CoreStack
+
 ```yaml
 name: Angular Build Test
 
@@ -102,6 +107,77 @@ jobs:
     with:
       PATH: ${{ needs.angular-build.outputs.path }}
       project_name: ClientAppName
+```
+
+### Angular *development* workflow example (no sbom upload)
+
+To scan and create an SBOM and view the results in your workflow **without** uploading the SBOM to CoreStack, no secrets or `project_name` is required.  Just set the `scan_only` input to 'true'
+
+```yaml
+name: Angular Build Test
+
+on: workflow_dispatch
+
+env:
+  WORKING_DIRECTORY: './Web'
+  NODE_VERSION: 10.9.0
+
+jobs:
+  angular-build:
+    name: Build Angular App
+    runs-on: ubuntu-latest
+    [...]
+
+  call-workflow:
+    needs: angular-build
+    uses: corestacklabs/graphion-workflow-templates/.github/workflows/sbom.yml@main
+    with:
+      PATH: ${{ needs.angular-build.outputs.path }}
+      scan_only: 'true'
+```
+
+### KICS Terraform scan example (Advanced Security Enabled)
+
+To scan infrastructure files such as Ansible, CloudFormation, Terraform, Kubernetes, etc., the only input needed is `KICS_scan_type`.  To import the reults to GitHub Security, set `KICS_upload` to 'true' and make sure Advanced Security in the repo is enabled.  The KICS scans will not upload to CoreStack at this time.
+
+```yaml
+  call-workflow:
+    uses: corestacklabs/graphion-workflow-templates/.github/workflows/sbomdev.yml@main
+    with:
+      PATH: './terraform'
+      KICS_scan_type: 'Terraform'
+      KICS_upload: 'true'
+```
+
+### KICS CloudFormation scan example
+
+This is another example of the KICS scan with a CloudFormation type and no upload to GitHub security.
+
+```yaml
+  call-workflow:
+    uses: corestacklabs/graphion-workflow-templates/.github/workflows/sbomdev.yml@main
+    with:
+      PATH: './cfn'
+      KICS_scan_type: 'CloudFormation'
+```
+
+### Container Image example workflow with hadolint dockerfile scan
+
+This is an example of a container image scan.  Pass the `IMAGE` tag, the `REGISTRY_PASSWORD` secret, and the `REGISTRY_USERNAME` input.  To use the hadolint scan, pass the location of your dockerfile to `dockerfile_path`
+
+```yaml
+  call-workflow:
+    needs: build
+    uses: corestacklabs/graphion-workflow-templates/.github/workflows/sbomdev.yml@main
+    secrets:
+        CORESTACK_ACCESS_KEY: ${{ secrets.CORESTACK_ACCESS_KEY }} 
+        CORESTACK_SECRET_KEY: ${{ secrets.CORESTACK_SECRET_KEY }} 
+        REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+    with:
+      IMAGE: ${{ needs.build.outputs.tags }}
+      REGISTRY_USERNAME: ${{ needs.build.outputs.organization }}
+      project_name: 'Docker Container'
+      dockerfile_path: "${{ needs.build.outputs.path }}/dockerfile"
 ```
 
 ## Example projects with workflows
