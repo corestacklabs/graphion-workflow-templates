@@ -5,10 +5,10 @@ on:
     secrets:
       CORESTACK_ACCESS_KEY:
         description: "API Access key from a CoreStack user"
-        required: true
+        required: false
       CORESTACK_SECRET_KEY:
         description: "API Secret key from a CoreStack user"
-        required: true
+        required: false
       REGISTRY_PASSWORD:
         description: "Password or token for container registry (if using IMAGE input)"
         required: false
@@ -38,10 +38,25 @@ on:
         type: string
         required: false
         default: './dockerfile'
+      KICS_scan_type:
+        description: 'Run KICS scan instead of SBOM generation and upload (Ansible, AzureResourceManager, CloudFormation, Dockerfile, Kubernetes, OpenAPI, Terraform)'
+        type: string
+        required: false
+        default: ''
+      KICS_upload:
+        description: 'When running a KICS scan, upload the results to the GitHub Security tab (true/false)'
+        type: string
+        required: false
+        default: 'false'
+      skip_upload:
+        description: 'Skip SBOM upload to CoreStack (true/false) - for testing or if you only want to generate the SBOM artifact without uploading'
+        type: string
+        required: false
+        default: 'false'
       project_name:
         description: 'AppSecOps project name (e.g. Payment Service) - used to resolve project_id'
         type: string
-        required: true
+        required: false
       sbom_definition_name:
         description: 'Name for the SBOM definition (defaults to filename without extension)'
         type: string
@@ -67,13 +82,72 @@ env:
   API_BASE: ${{ inputs.api_base_url || 'https://api.corestack.io' }}
       
 jobs:  
-  create-sbom-and-scan:
+  scan-terraform:
+    if: ${{ inputs.KICS_scan_type != '' }}
     runs-on: ubuntu-latest
     steps:
+      - name: Validate inputs
+        shell: bash
+        run: |
+          if [[ -z "${{ inputs.PATH  }}" ]]; then
+            echo "Error: 'PATH' is required for Terraform scans."
+            exit 1
+          fi
+
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Create SBOM With Image
+      - name: Scan Path with KICS
+        uses: Checkmarx/kics-github-action@v2.1.20
+        with:
+         path: ${{ inputs.PATH }}
+         output_formats: 'sarif,json'
+         output_path: '.'
+         ignore_on_exit: 'all'
+         enable_jobs_summary: 'true'
+                  
+      - name: Upload to GitHub Security Tab
+        if: ${{ inputs.KICS_upload == 'true' }}
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: results.sarif
+
+      - name: Upload KICS Artifact
+        uses: actions/upload-artifact@v6
+        with:
+            name: kics-output-json
+            path: results.json
+
+  create-sbom-and-scan:
+    if: ${{ inputs.KICS_scan_type== ''}}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate inputs
+        shell: bash
+        run: |
+          if [[ "${{ inputs.KICS_scan_type }}" == "" && "${{ inputs.skip_upload }}" != "true" && -z "${{ inputs.project_name  }}" ]]; then
+            echo "Error: 'project_name' is required."
+            exit 1
+          fi
+          if [[ "${{ inputs.KICS_scan_type }}" == "" && "${{ inputs.skip_upload }}" != "true" ]]; then
+            if [[ -z "${{ inputs.FILE  }}" && -z "${{ inputs.PATH  }}" && -z "${{ inputs.IMAGE  }}" ]]; then
+              echo "Error: Either FILE, PATH, OR IMAGE is required."
+              exit 1
+            fi
+          fi
+          if [[ -n "${{ inputs.IMAGE  }}" && -z "${{ inputs.REGISTRY_USERNAME  }}" ]]; then
+            echo "Error: REGISTRY_USERNAME is required for image scans."
+            exit 1
+          fi
+          if [[ -n "${{ inputs.IMAGE  }}" && -z "${{ secrets.REGISTRY_PASSWORD  }}" ]]; then
+            echo "Error: REGISTRY_PASSWORD is required for image scans."
+            exit 1
+          fi
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+        
+      - name: Create SBOM With Syft Image Scan
         if: ${{ inputs.IMAGE != '' }}
         uses: anchore/sbom-action@v0
         with:
@@ -83,7 +157,7 @@ jobs:
          format: cyclonedx-json
          output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
 
-      - name: Create SBOM With File
+      - name: Create SBOM With Syft File Scan
         if: ${{ inputs.FILE != '' }}
         uses: anchore/sbom-action@v0
         with:
@@ -91,14 +165,14 @@ jobs:
          format: cyclonedx-json
          output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
 
-      - name: Create SBOM With Path
+      - name: Create SBOM With Syft Path Scan
         if: ${{ inputs.PATH != '' }}
         uses: anchore/sbom-action@v0
         with:
          path: ${{ inputs.PATH }}
          format: cyclonedx-json
          output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
-
+         
       - name: Run Grype Scan
         run: |
             curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
@@ -124,7 +198,7 @@ jobs:
           echo "Grype analysis complete: $CRITICAL_CVE critical, $HIGH_CVE high, $MEDIUM_CVE medium vulnerabilities found."
 
       - name: Lint Dockerfile with Hadolint
-        if: ${{ inputs.IMAGE != '' }}
+        if: ${{ inputs.IMAGE != '' && inputs.dockerfile_path != '' }}
         id: hadolint
         uses: hadolint/hadolint-action@v3.1.0
         with:
@@ -133,7 +207,7 @@ jobs:
           output-file: "${{ github.event.repository.name }}-hadolint.json"
 
       - name: Upload Hadolint Artifact
-        if: ${{ inputs.IMAGE != '' }}
+        if: ${{ inputs.IMAGE != '' && inputs.dockerfile_path != '' }}
         uses: actions/upload-artifact@v6
         with:
           name: hadolint-json-report
@@ -233,9 +307,22 @@ jobs:
           } >> $GITHUB_STEP_SUMMARY
 
   upload-sbom:
+    if: ${{ inputs.KICS_scan_type== '' && inputs.skip_upload != 'true' }}
     needs: create-sbom-and-scan
     runs-on: ubuntu-latest
-    steps:      
+    steps:
+      - name: Validate inputs
+        shell: bash
+        run: |
+          if [[ -z "${{ secrets.CORESTACK_ACCESS_KEY }}" ]]; then
+            echo "Error: 'CORESTACK_ACCESS_KEY' is required for SBOM upload."
+            exit 1
+          fi
+          if [[ -z "${{ secrets.CORESTACK_SECRET_KEY }}" ]]; then
+            echo "Error: 'CORESTACK_SECRET_KEY' is required for SBOM upload."
+            exit 1
+          fi
+
       - name: Download Artifacts
         uses: actions/download-artifact@v8
         with:
