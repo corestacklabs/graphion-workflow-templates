@@ -142,7 +142,7 @@ To scan infrastructure files such as Ansible, CloudFormation, Terraform, Kuberne
 
 ```yaml
   call-workflow:
-    uses: corestacklabs/graphion-workflow-templates/.github/workflows/sbomdev.yml@main
+    uses: corestacklabs/graphion-workflow-templates/.github/workflows/sbom.yml@main
     with:
       PATH: './terraform'
       KICS_scan_type: 'Terraform'
@@ -155,7 +155,7 @@ This is another example of the KICS scan with a CloudFormation type and no uploa
 
 ```yaml
   call-workflow:
-    uses: corestacklabs/graphion-workflow-templates/.github/workflows/sbomdev.yml@main
+    uses: corestacklabs/graphion-workflow-templates/.github/workflows/sbom.yml@main
     with:
       PATH: './cfn'
       KICS_scan_type: 'CloudFormation'
@@ -168,7 +168,7 @@ This is an example of a container image scan.  Pass the `IMAGE` tag, the `REGIST
 ```yaml
   call-workflow:
     needs: build
-    uses: corestacklabs/graphion-workflow-templates/.github/workflows/sbomdev.yml@main
+    uses: corestacklabs/graphion-workflow-templates/.github/workflows/sbom.yml@main
     secrets:
         CORESTACK_ACCESS_KEY: ${{ secrets.CORESTACK_ACCESS_KEY }} 
         CORESTACK_SECRET_KEY: ${{ secrets.CORESTACK_SECRET_KEY }} 
