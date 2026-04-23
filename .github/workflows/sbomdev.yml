@@ -79,7 +79,7 @@ on:
         default: 'false'
 
 env:
-  API_BASE: ${{ inputs.api_base_url || 'https://api.corestack.io' }}
+  API_BASE: ${{ inputs.api_base_url }}
       
 jobs:  
   scan-terraform:
@@ -125,21 +125,19 @@ jobs:
       - name: Validate inputs
         shell: bash
         run: |
-          if [[ "${{ inputs.KICS_scan_type }}" == "" && "${{ inputs.skip_upload }}" != "true" && -z "${{ inputs.project_name  }}" ]]; then
+          if [[ "${{ inputs.skip_upload }}" != "true" && -z "${{ inputs.project_name }}" ]]; then
             echo "Error: 'project_name' is required."
             exit 1
           fi
-          if [[ "${{ inputs.KICS_scan_type }}" == "" && "${{ inputs.skip_upload }}" != "true" ]]; then
-            if [[ -z "${{ inputs.FILE  }}" && -z "${{ inputs.PATH  }}" && -z "${{ inputs.IMAGE  }}" ]]; then
-              echo "Error: Either FILE, PATH, OR IMAGE is required."
-              exit 1
-            fi
+          if [[ "${{ inputs.skip_upload }}" != "true" && -z "${{ inputs.FILE }}" && -z "${{ inputs.PATH }}" && -z "${{ inputs.IMAGE }}" ]]; then
+            echo "Error: Either FILE, PATH, OR IMAGE is required."
+            exit 1
           fi
-          if [[ -n "${{ inputs.IMAGE  }}" && -z "${{ inputs.REGISTRY_USERNAME  }}" ]]; then
+          if [[ -n "${{ inputs.IMAGE }}" && -z "${{ inputs.REGISTRY_USERNAME }}" ]]; then
             echo "Error: REGISTRY_USERNAME is required for image scans."
             exit 1
           fi
-          if [[ -n "${{ inputs.IMAGE  }}" && -z "${{ secrets.REGISTRY_PASSWORD  }}" ]]; then
+          if [[ -n "${{ inputs.IMAGE }}" && -z "${{ secrets.REGISTRY_PASSWORD }}" ]]; then
             echo "Error: REGISTRY_PASSWORD is required for image scans."
             exit 1
           fi
@@ -176,18 +174,21 @@ jobs:
          output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
          
       - name: Run Grype Scan
+        if: ${{ inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '' }}
         run: |
             curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
             grype sbom:"${{ github.event.repository.name }}-sbom.cdx.json" -o cyclonedx-json > ${{ github.event.repository.name }}-sbom.json
 
       - name: Upload Grype Artifact
+        if: ${{ inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '' }}
         uses: actions/upload-artifact@v6
         with:
             name: grype-output-cdx
             path: ${{ github.event.repository.name }}-sbom.json
-            
+
       - name: Grype Analysis
         id: grype-analysis
+        if: ${{ inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '' }}
         run: |
           set +e
           CRITICAL_CVE=$(cat ${{ github.event.repository.name }}-sbom.json | jq '[.vulnerabilities[]? | select(.ratings[].severity == "critical")] |length')
@@ -285,38 +286,31 @@ jobs:
           name: Dockle Report
           path: ${{ github.event.repository.name }}-dockle.json
 
-      - name: Generate Artifact Summary
+      - name: Generate Summary
         run: |
           {
             echo "## SBOM Creation and Scan complete"
             echo "- **SBOM Artifact:** ${{ github.event.repository.name }}-sbom.json"
-          } >> $GITHUB_STEP_SUMMARY
-          if [ "${{ inputs.IMAGE }}" != '' ]; then
-            {
+            if [ "${{ inputs.IMAGE }}" != '' ]; then
               echo "- **Dockle Artifact:** ${{ github.event.repository.name }}-dockle.json"
               echo "- **Hadolint Artifact:** ${{ github.event.repository.name }}-hadolint.json"
-            } >> $GITHUB_STEP_SUMMARY
-          fi
-
-      - name: Generate Grype Summary
-        run: |
-          {
-            echo "### 🔍 Grype Scan Summary"
-            echo "| Severity | Count |"
-            echo "|---|---|"
-            echo "| Critical | ${{ steps.grype-analysis.outputs.Criticals }} |"
-            echo "| High | ${{ steps.grype-analysis.outputs.Highs }} |"
-            echo "| Medium | ${{ steps.grype-analysis.outputs.Mediums }} |"
-          } >> $GITHUB_STEP_SUMMARY
-
-      - name: Generate Dockle Summary
-        if: ${{ inputs.IMAGE != '' }}
-        run: |
-          {
-            echo "### 📊 Dockle Summary"
-            echo "| Severity | Count |"
-            echo "|---|---|"
-            jq -r '.summary | to_entries[] | "| \(.key) | \(.value) |"' ${{ github.event.repository.name }}-dockle.json
+            fi
+            if [ "${{ inputs.IMAGE }}" != '' ] || [ "${{ inputs.FILE }}" != '' ] || [ "${{ inputs.PATH }}" != '' ]; then
+              echo ""
+              echo "### 🔍 Grype Scan Summary"
+              echo "| Severity | Count |"
+              echo "|---|---|"
+              echo "| Critical | ${{ steps.grype-analysis.outputs.Criticals }} |"
+              echo "| High | ${{ steps.grype-analysis.outputs.Highs }} |"
+              echo "| Medium | ${{ steps.grype-analysis.outputs.Mediums }} |"
+            fi
+            if [ "${{ inputs.IMAGE }}" != '' ]; then
+              echo ""
+              echo "### 📊 Dockle Summary"
+              echo "| Severity | Count |"
+              echo "|---|---|"
+              jq -r '.summary | to_entries[] | "| \(.key) | \(.value) |"' ${{ github.event.repository.name }}-dockle.json
+            fi
           } >> $GITHUB_STEP_SUMMARY
 
   upload-sbom:
@@ -342,9 +336,6 @@ jobs:
           merge-multiple: true
           path: .
 
-      - name: List files in repo root (for verification)
-        run: ls -R
-
       - name: Validate SBOM file exists
         id: validate
         run: |
@@ -364,12 +355,9 @@ jobs:
           else
             echo "dockle_exists=false" >> $GITHUB_OUTPUT  
           fi
-          # get the base SBOM name
-          FILENAME=$(basename "${{ github.event.repository.name }}-sbom.json")
+          FILENAME="${{ github.event.repository.name }}-sbom.json"
           echo "filename=$FILENAME" >> $GITHUB_OUTPUT
-          # Default sbom_definition_name to filename without extension
-          BASE="${FILENAME%.*}"
-          echo "sbom_name=${BASE}" >> $GITHUB_OUTPUT          
+          echo "sbom_name=${{ github.event.repository.name }}-sbom" >> $GITHUB_OUTPUT
           echo "SBOM file validated: $FILENAME"
 
       - name: Get CoreStack auth token
@@ -378,10 +366,6 @@ jobs:
           ACCESS_KEY: ${{ secrets.CORESTACK_ACCESS_KEY }}
           SECRET_KEY: ${{ secrets.CORESTACK_SECRET_KEY }}
         run: |
-          if [ -z "$ACCESS_KEY" ] || [ -z "$SECRET_KEY" ]; then
-            echo "::error::Secrets CORESTACK_ACCESS_KEY and CORESTACK_SECRET_KEY must be set."
-            exit 1
-          fi
           RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/auth/tokens" \
             -H "Content-Type: application/json" \
             -d "{\"access_key\":\"$ACCESS_KEY\",\"secret_key\":\"$SECRET_KEY\"}")
@@ -662,49 +646,60 @@ jobs:
           echo "formatted_build_id=$FORMATTED_BUILD_ID" >> $GITHUB_OUTPUT
           echo "Build ID formatted: $FORMATTED_BUILD_ID"
 
-      - name: Create SBOM attachment
-        id: attachment-sbom
+      - name: Create and Upload Attachments
+        id: attachments
         env:
           AUTH_TOKEN: ${{ steps.auth.outputs.token }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          HADOLINT_EXISTS: ${{ steps.validate.outputs.hadolint_exists }}
+          DOCKLE_EXISTS: ${{ steps.validate.outputs.dockle_exists }}
         run: |
-          FILENAME="${{ steps.validate.outputs.filename }}"
-          # Postman: name and file_name; response.id
-          RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/attachment/create" \
-            -H "Content-Type: application/json" \
-            -H "X-Auth-Token: $AUTH_TOKEN" \
-            -d "{\"name\":\"$FILENAME\",\"file_name\":\"$FILENAME\"}")
-          HTTP_CODE=$(echo "$RESP" | tail -n1)
-          BODY=$(echo "$RESP" | sed '$d')
-          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-            echo "::error::Create attachment failed (HTTP $HTTP_CODE): $BODY"
-            exit 1
-          fi
-          ATTACHMENT_ID=$(echo "$BODY" | jq -r '.id // .data.id // empty')
-          if [ -z "$ATTACHMENT_ID" ] || [ "$ATTACHMENT_ID" = "null" ]; then
-            echo "::error::No attachment id in response: $BODY"
-            exit 1
-          fi
-          echo "attachment_id=$ATTACHMENT_ID" >> $GITHUB_OUTPUT
-          echo "Attachment created: $ATTACHMENT_ID"
+          attach_and_upload() {
+            local FILENAME="$1"
+            local RESP HTTP_CODE BODY ATTACHMENT_ID
+            RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/attachment/create" \
+              -H "Content-Type: application/json" \
+              -H "X-Auth-Token: $AUTH_TOKEN" \
+              -d "{\"name\":\"$FILENAME\",\"file_name\":\"$FILENAME\"}")
+            HTTP_CODE=$(echo "$RESP" | tail -n1)
+            BODY=$(echo "$RESP" | sed '$d')
+            if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+              echo "::error::Create attachment failed for $FILENAME (HTTP $HTTP_CODE): $BODY"
+              exit 1
+            fi
+            ATTACHMENT_ID=$(echo "$BODY" | jq -r '.id // .data.id // empty')
+            if [ -z "$ATTACHMENT_ID" ] || [ "$ATTACHMENT_ID" = "null" ]; then
+              echo "::error::No attachment id in response for $FILENAME: $BODY"
+              exit 1
+            fi
+            RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/attachment/item/$ATTACHMENT_ID/stream" \
+              -H "X-Auth-Token: $AUTH_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data-binary "@$FILENAME")
+            HTTP_CODE=$(echo "$RESP" | tail -n1)
+            BODY=$(echo "$RESP" | sed '$d')
+            if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+              echo "::error::Upload stream failed for $FILENAME (HTTP $HTTP_CODE): $BODY"
+              exit 1
+            fi
+            echo "$ATTACHMENT_ID"
+          }
 
-      - name: Upload SBOM file to attachment stream
-        id: upload-sbom
-        env:
-          AUTH_TOKEN: ${{ steps.auth.outputs.token }}
-        run: |
-          ATTACHMENT_ID="${{ steps.attachment-sbom.outputs.attachment_id }}"
-          SBOM_FILE="${{ github.event.repository.name }}-sbom.json"
-          RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/attachment/item/${ATTACHMENT_ID}/stream" \
-            -H "X-Auth-Token: $AUTH_TOKEN" \
-            -H "Content-Type: application/json" \
-            --data-binary "@${SBOM_FILE}")
-          HTTP_CODE=$(echo "$RESP" | tail -n1)
-          BODY=$(echo "$RESP" | sed '$d')
-          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-            echo "::error::Upload failed (HTTP $HTTP_CODE): $BODY"
-            exit 1
+          SBOM_ID=$(attach_and_upload "${REPO_NAME}-sbom.json")
+          echo "sbom_attachment_id=$SBOM_ID" >> $GITHUB_OUTPUT
+          echo "SBOM attachment uploaded: $SBOM_ID"
+
+          if [ "$HADOLINT_EXISTS" = "true" ]; then
+            HADOLINT_ID=$(attach_and_upload "${REPO_NAME}-hadolint.json")
+            echo "hadolint_attachment_id=$HADOLINT_ID" >> $GITHUB_OUTPUT
+            echo "Hadolint attachment uploaded: $HADOLINT_ID"
           fi
-          echo "SBOM file uploaded successfully."
+
+          if [ "$DOCKLE_EXISTS" = "true" ]; then
+            DOCKLE_ID=$(attach_and_upload "${REPO_NAME}-dockle.json")
+            echo "dockle_attachment_id=$DOCKLE_ID" >> $GITHUB_OUTPUT
+            echo "Dockle attachment uploaded: $DOCKLE_ID"
+          fi
 
       - name: Upload SBOM Version
         id: sbom-version
@@ -719,7 +714,7 @@ jobs:
           BODY=$(jq -n \
             --arg tenant_id "${{ steps.auth.outputs.tenant_id }}" \
             --arg sbom_definition_id "${{ steps.sbom-def.outputs.sbom_definition_id }}" \
-            --arg attachment_id "${{ steps.attachment-sbom.outputs.attachment_id }}" \
+            --arg attachment_id "${{ steps.attachments.outputs.sbom_attachment_id }}" \
             --arg build_id "${{ steps.format-build-number.outputs.formatted_build_id }}" \
             --argjson force $FORCE \
             '{
@@ -746,98 +741,6 @@ jobs:
           echo "version_number=$VERSION_NUMBER" >> $GITHUB_OUTPUT
           echo "SBOM version created successfully."
           
-      - name: Create hadolint attachment
-        if: ${{ steps.validate.outputs.hadolint_exists == 'true' }}
-        id: attachment-hadolint
-        env:
-          AUTH_TOKEN: ${{ steps.auth.outputs.token }}
-        run: |
-          FILENAME="${{ github.event.repository.name }}-hadolint.json"
-          # Postman: name and file_name; response.id
-          RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/attachment/create" \
-            -H "Content-Type: application/json" \
-            -H "X-Auth-Token: $AUTH_TOKEN" \
-            -d "{\"name\":\"$FILENAME\",\"file_name\":\"$FILENAME\"}")
-          HTTP_CODE=$(echo "$RESP" | tail -n1)
-          BODY=$(echo "$RESP" | sed '$d')
-          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-            echo "::error::Create attachment failed (HTTP $HTTP_CODE): $BODY"
-            exit 1
-          fi
-          ATTACHMENT_ID=$(echo "$BODY" | jq -r '.id // .data.id // empty')
-          if [ -z "$ATTACHMENT_ID" ] || [ "$ATTACHMENT_ID" = "null" ]; then
-            echo "::error::No attachment id in response: $BODY"
-            exit 1
-          fi
-          echo "attachment_id=$ATTACHMENT_ID" >> $GITHUB_OUTPUT
-          echo "Attachment created: $ATTACHMENT_ID"
-
-      - name: Upload hadolint file to attachment stream
-        if: ${{ steps.validate.outputs.hadolint_exists == 'true' }}
-        id: upload-hadolint
-        env:
-          AUTH_TOKEN: ${{ steps.auth.outputs.token }}
-        run: |
-          FILENAME="${{ github.event.repository.name }}-hadolint.json"
-          ATTACHMENT_ID="${{ steps.attachment-hadolint.outputs.attachment_id }}"
-          RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/attachment/item/${ATTACHMENT_ID}/stream" \
-            -H "X-Auth-Token: $AUTH_TOKEN" \
-            -H "Content-Type: application/json" \
-            --data-binary "@${FILENAME}")
-          HTTP_CODE=$(echo "$RESP" | tail -n1)
-          BODY=$(echo "$RESP" | sed '$d')
-          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-            echo "::error::Upload failed (HTTP $HTTP_CODE): $BODY"
-            exit 1
-          fi
-          echo "hadolint file uploaded successfully."
-          
-      - name: Create dockle attachment
-        if: ${{ steps.validate.outputs.dockle_exists == 'true' }}
-        id: attachment-dockle
-        env:
-          AUTH_TOKEN: ${{ steps.auth.outputs.token }}
-        run: |
-          FILENAME="${{ github.event.repository.name }}-dockle.json"
-          # Postman: name and file_name; response.id
-          RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/attachment/create" \
-            -H "Content-Type: application/json" \
-            -H "X-Auth-Token: $AUTH_TOKEN" \
-            -d "{\"name\":\"$FILENAME\",\"file_name\":\"$FILENAME\"}")
-          HTTP_CODE=$(echo "$RESP" | tail -n1)
-          BODY=$(echo "$RESP" | sed '$d')
-          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-            echo "::error::Create attachment failed (HTTP $HTTP_CODE): $BODY"
-            exit 1
-          fi
-          ATTACHMENT_ID=$(echo "$BODY" | jq -r '.id // .data.id // empty')
-          if [ -z "$ATTACHMENT_ID" ] || [ "$ATTACHMENT_ID" = "null" ]; then
-            echo "::error::No attachment id in response: $BODY"
-            exit 1
-          fi
-          echo "attachment_id=$ATTACHMENT_ID" >> $GITHUB_OUTPUT
-          echo "Attachment created: $ATTACHMENT_ID"
-
-      - name: Upload dockle file to attachment stream
-        if: ${{ steps.validate.outputs.dockle_exists == 'true' }}
-        id: upload-dockle
-        env:
-          AUTH_TOKEN: ${{ steps.auth.outputs.token }}
-        run: |
-          FILENAME="${{ github.event.repository.name }}-dockle.json"
-          ATTACHMENT_ID="${{ steps.attachment-dockle.outputs.attachment_id }}"
-          RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/attachment/item/${ATTACHMENT_ID}/stream" \
-            -H "X-Auth-Token: $AUTH_TOKEN" \
-            -H "Content-Type: application/json" \
-            --data-binary "@${FILENAME}")
-          HTTP_CODE=$(echo "$RESP" | tail -n1)
-          BODY=$(echo "$RESP" | sed '$d')
-          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-            echo "::error::Upload failed (HTTP $HTTP_CODE): $BODY"
-            exit 1
-          fi
-          echo "dockle file uploaded successfully."
-
       - name: Upload Container Findings to SBOM Version
         if: ${{ steps.validate.outputs.dockle_exists == 'true' && steps.validate.outputs.hadolint_exists == 'true' }}
         id: container_findings
@@ -847,8 +750,8 @@ jobs:
           BODY=$(jq -n \
             --arg tenant_id "${{ steps.auth.outputs.tenant_id }}" \
             --arg sbom_version_id "${{ steps.sbom-version.outputs.version_id }}" \
-            --arg dockle_attachment_id "${{ steps.attachment-dockle.outputs.attachment_id }}" \
-            --arg hadolint_attachment_id "${{ steps.attachment-hadolint.outputs.attachment_id }}" \
+            --arg dockle_attachment_id "${{ steps.attachments.outputs.dockle_attachment_id }}" \
+            --arg hadolint_attachment_id "${{ steps.attachments.outputs.hadolint_attachment_id }}" \
             '{
               "tenant_id": $tenant_id,
               "sbom_version_id": $sbom_version_id,
