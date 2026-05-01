@@ -145,6 +145,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
         
+      - name: Create Syft config
+        run: |
+          cat > .syft.yaml << 'EOF'
+          file:
+            metadata:
+              digests:
+                - sha256
+          EOF
+
         # Syft uses go-containerregistry to login to any registry with registry-username and registry-password
         # ACR, ECR, GCR, Harbor, GHCR
       - name: Create SBOM With Syft Image Scan
@@ -156,6 +165,7 @@ jobs:
          registry-password: ${{ secrets.REGISTRY_PASSWORD }}
          format: cyclonedx-json
          output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
+         config: .syft.yaml
 
       - name: Create SBOM With Syft File Scan
         if: ${{ inputs.FILE != '' }}
@@ -164,6 +174,7 @@ jobs:
          file: ${{ inputs.FILE }}
          format: cyclonedx-json
          output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
+         config: .syft.yaml
 
       - name: Create SBOM With Syft Path Scan
         if: ${{ inputs.PATH != '' }}
@@ -172,6 +183,7 @@ jobs:
          path: ${{ inputs.PATH }}
          format: cyclonedx-json
          output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
+         config: .syft.yaml
          
       - name: Run Grype Scan
         if: ${{ inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '' }}
