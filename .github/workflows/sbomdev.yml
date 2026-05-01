@@ -183,7 +183,7 @@ jobs:
         if: ${{ inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '' }}
         uses: actions/upload-artifact@v6
         with:
-            name: grype-output-cdx
+            name: grype-output-cdx-${{ inputs.project_name }}
             path: ${{ github.event.repository.name }}-sbom.json
 
       - name: Grype Analysis
@@ -213,7 +213,7 @@ jobs:
         if: ${{ inputs.IMAGE != '' && inputs.dockerfile_path != '' }}
         uses: actions/upload-artifact@v6
         with:
-          name: hadolint-json-report
+          name: hadolint-json-report-${{ inputs.project_name }}
           path: ${{ github.event.repository.name }}-hadolint.json
 
       - name: Determine Container Registry
@@ -252,7 +252,7 @@ jobs:
 
       - name: Configure AWS Credentials
         if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && steps.registry.outputs.type == 'ecr' }}
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-access-key-id: ${{ inputs.REGISTRY_USERNAME }}
           aws-secret-access-key: ${{ secrets.REGISTRY_PASSWORD }}
@@ -283,7 +283,7 @@ jobs:
         if: ${{ inputs.IMAGE != '' }}
         uses: actions/upload-artifact@v6
         with:
-          name: Dockle Report
+          name: dockle-report-${{ inputs.project_name }}
           path: ${{ github.event.repository.name }}-dockle.json
 
       - name: Generate Summary
@@ -333,6 +333,7 @@ jobs:
       - name: Download Artifacts
         uses: actions/download-artifact@v8
         with:
+          pattern: "*-${{ inputs.project_name }}"
           merge-multiple: true
           path: .
 
