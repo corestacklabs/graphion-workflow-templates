@@ -743,31 +743,34 @@ jobs:
           echo "SBOM version created successfully."
           
       - name: Upload Container Findings to SBOM Version
-        if: ${{ steps.validate.outputs.dockle_exists == 'true' && steps.validate.outputs.hadolint_exists == 'true' }}
+        if: ${{ steps.validate.outputs.dockle_exists == 'true' || steps.validate.outputs.hadolint_exists == 'true' }}
         id: container_findings
         env:
           AUTH_TOKEN: ${{ steps.auth.outputs.token }}
+          DOCKLE_EXISTS: ${{ steps.validate.outputs.dockle_exists }}
+          HADOLINT_EXISTS: ${{ steps.validate.outputs.hadolint_exists }}
+          DOCKLE_ATTACHMENT_ID: ${{ steps.attachments.outputs.dockle_attachment_id }}
+          HADOLINT_ATTACHMENT_ID: ${{ steps.attachments.outputs.hadolint_attachment_id }}
         run: |
+          FINDINGS='[]'
+          if [ "$DOCKLE_EXISTS" = "true" ]; then
+            FINDINGS=$(echo "$FINDINGS" | jq \
+              --arg id "$DOCKLE_ATTACHMENT_ID" \
+              '. + [{"__type": "ContainerFindingsForDockle", "file_format": "json", "attachment_id": $id}]')
+          fi
+          if [ "$HADOLINT_EXISTS" = "true" ]; then
+            FINDINGS=$(echo "$FINDINGS" | jq \
+              --arg id "$HADOLINT_ATTACHMENT_ID" \
+              '. + [{"__type": "ContainerFindingsForHadolint", "file_format": "json", "attachment_id": $id}]')
+          fi
           BODY=$(jq -n \
             --arg tenant_id "${{ steps.auth.outputs.tenant_id }}" \
             --arg sbom_version_id "${{ steps.sbom-version.outputs.version_id }}" \
-            --arg dockle_attachment_id "${{ steps.attachments.outputs.dockle_attachment_id }}" \
-            --arg hadolint_attachment_id "${{ steps.attachments.outputs.hadolint_attachment_id }}" \
+            --argjson findings "$FINDINGS" \
             '{
               "tenant_id": $tenant_id,
               "sbom_version_id": $sbom_version_id,
-              "container_findings": [
-                {
-                  "__type": "ContainerFindingsForDockle",
-                  "file_format": "json",
-                  "attachment_id": $dockle_attachment_id
-                },
-                {
-                  "__type": "ContainerFindingsForHadolint",
-                  "file_format": "json",
-                  "attachment_id": $hadolint_attachment_id
-                }
-              ]
+              "container_findings": $findings
             }')
           RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/appsecops/container/findings/ingest" \
             -H "Content-Type: application/json" \
