@@ -82,7 +82,7 @@ env:
   API_BASE: ${{ inputs.api_base_url }}
       
 jobs:  
-  scan-terraform:
+  infrastructure-scan:
     if: ${{ inputs.KICS_scan_type != '' }}
     runs-on: ubuntu-latest
     steps:
@@ -190,6 +190,34 @@ jobs:
         run: |
             curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
             grype sbom:"${{ github.event.repository.name }}-sbom.cdx.json" -o cyclonedx-json > ${{ github.event.repository.name }}-sbom.json
+
+      - name: Add SHA-256 image digest to SBOM
+        if: ${{ inputs.IMAGE != '' }}
+        run: |
+          SBOM_FILE="${{ github.event.repository.name }}-sbom.json"
+          SYFT_FILE="${{ github.event.repository.name }}-sbom.cdx.json"
+          BASE_NAME="${SBOM_FILE%.json}"
+          OUT_FILE="${BASE_NAME}-CycloneDX-sha256.json"
+
+          DIGEST=$(jq -r '(.metadata.component.hashes // [])[] | select(.alg == "SHA-256") | .content' "$SYFT_FILE" 2>/dev/null | head -1)
+
+          if [ -z "$DIGEST" ] || [ "$DIGEST" = "null" ]; then
+            echo "::warning::No SHA-256 digest found in Syft SBOM; skipping digest injection."
+            exit 0
+          fi
+
+          echo "Image digest: $DIGEST"
+
+          jq --arg digest "$DIGEST" '
+            .metadata.component.hashes //= [] |
+            if (.metadata.component.hashes | map(select(.alg == "SHA-256" and .content == $digest)) | length) == 0
+            then .metadata.component.hashes += [{"alg": "SHA-256", "content": $digest}]
+            else .
+            end
+          ' "$SBOM_FILE" > "$OUT_FILE"
+
+          cp "$OUT_FILE" "$SBOM_FILE"
+          echo "SHA-256 digest added to SBOM. Output: $OUT_FILE"
 
       - name: Upload Grype Artifact
         if: ${{ inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '' }}
