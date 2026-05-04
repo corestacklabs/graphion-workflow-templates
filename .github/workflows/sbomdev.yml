@@ -342,6 +342,7 @@ jobs:
                   -e 's/^\|[0-9]+ .+\/bin\/sh/\/bin\/sh/' \
                   -e 's|^/bin/sh -c #\(nop\) +||' \
                   -e 's|^/bin/sh -c |RUN |' \
+                  -e 's/ #.*$//' \
               | grep -E '^(FROM|RUN|CMD|LABEL|EXPOSE|ENV|ADD|COPY|ENTRYPOINT|VOLUME|USER|WORKDIR|ARG|ONBUILD|STOPSIGNAL|HEALTHCHECK|SHELL|MAINTAINER)( |\[|$)' \
               | grep -vE '^(COPY|ADD) file:' \
               > "$DOCKERFILE_PATH"
