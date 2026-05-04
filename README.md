@@ -46,7 +46,7 @@ The following secrets must be available in the client's organizational secrets. 
 |---|---|---|---|---|
 | `REGISTRY_USERNAME` | String |  No | | Username for container registry |
 | `REGISTRY_REGION` | String |  No | | Region for container registry - **only for AWS ECR** |
-| `dockerfile_path` | String |  No | ./dockerfile | Path to Dockerfile for Hadolint analysis |
+| `dockerfile_path` | String |  No | | Path to Dockerfile for hadolint analysis. Leave empty to auto-extract from image or history when IMAGE is provided. |
 
 #### Inputs for CoreStack to Upload Scan Results
 | Name | Type | Required | Unique | Default | Description |

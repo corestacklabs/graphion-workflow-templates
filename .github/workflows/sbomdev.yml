@@ -34,7 +34,7 @@ on:
         type: string
         required: false
       dockerfile_path:
-        description: 'Path to Dockerfile for hadolint analysis. Leave empty to auto-extract from image when IMAGE is provided.'
+        description: 'Path to Dockerfile for hadolint analysis. Leave empty to auto-extract from image or history when IMAGE is provided.'
         type: string
         required: false
         default: ''
@@ -358,13 +358,6 @@ jobs:
             echo "Reconstructed Dockerfile from image history."
           fi
           echo "dockerfile_path=$DOCKERFILE_PATH" >> $GITHUB_OUTPUT
-
-      - name: Upload Extracted Dockerfile Artifact
-        if: ${{ steps.extract-dockerfile.outputs.dockerfile_path != '' }}
-        uses: actions/upload-artifact@v6
-        with:
-          name: extracted-dockerfile-${{ inputs.project_name }}
-          path: ./extracted-dockerfile
 
       - name: Lint Dockerfile with Hadolint
         id: hadolint
