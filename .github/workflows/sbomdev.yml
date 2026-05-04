@@ -334,9 +334,22 @@ jobs:
           done
           docker rm "$CONTAINER_ID" > /dev/null
           if [ "$FOUND" = "false" ]; then
-            echo "::warning::No Dockerfile found inside image; skipping hadolint."
-            echo "dockerfile_path=" >> $GITHUB_OUTPUT
-            exit 0
+            echo "No Dockerfile found inside image; reconstructing from docker history..."
+            docker history --no-trunc --format "{{.CreatedBy}}" "$IMAGE" \
+              | tac \
+              | sed -E \
+                  -e '/^$/d' \
+                  -e 's/^\|[0-9]+ .+\/bin\/sh/\/bin\/sh/' \
+                  -e 's|^/bin/sh -c #\(nop\) +||' \
+                  -e 's|^/bin/sh -c |RUN |' \
+              | grep -vE '^(COPY|ADD) file:' \
+              > "$DOCKERFILE_PATH"
+            if [ ! -s "$DOCKERFILE_PATH" ]; then
+              echo "::warning::Could not reconstruct Dockerfile from history; skipping hadolint."
+              echo "dockerfile_path=" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            echo "Reconstructed Dockerfile from image history."
           fi
           echo "dockerfile_path=$DOCKERFILE_PATH" >> $GITHUB_OUTPUT
 
