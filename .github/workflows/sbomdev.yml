@@ -353,6 +353,13 @@ jobs:
           fi
           echo "dockerfile_path=$DOCKERFILE_PATH" >> $GITHUB_OUTPUT
 
+      - name: Upload Extracted Dockerfile Artifact
+        if: ${{ steps.extract-dockerfile.outputs.dockerfile_path != '' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: extracted-dockerfile-${{ inputs.project_name }}
+          path: ./extracted-dockerfile
+
       - name: Lint Dockerfile with Hadolint
         id: hadolint
         if: ${{ inputs.IMAGE != '' && (inputs.dockerfile_path != '' || steps.extract-dockerfile.outputs.dockerfile_path != '') }}
