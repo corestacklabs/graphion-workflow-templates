@@ -193,16 +193,38 @@ jobs:
 
       - name: Add SHA-256 image digest to SBOM
         if: ${{ inputs.IMAGE != '' }}
+        env:
+          REG_USER: ${{ inputs.REGISTRY_USERNAME }}
+          REG_PASS: ${{ secrets.REGISTRY_PASSWORD }}
+          REG_REGION: ${{ inputs.REGISTRY_REGION }}
+          IMAGE: ${{ inputs.IMAGE }}
         run: |
           SBOM_FILE="${{ github.event.repository.name }}-sbom.json"
-          SYFT_FILE="${{ github.event.repository.name }}-sbom.cdx.json"
           BASE_NAME="${SBOM_FILE%.json}"
           OUT_FILE="${BASE_NAME}-CycloneDX-sha256.json"
 
+          # Try syft SBOM first (fast, no network)
+          SYFT_FILE="${{ github.event.repository.name }}-sbom.cdx.json"
           DIGEST=$(jq -r '(.metadata.component.hashes // [])[] | select(.alg == "SHA-256") | .content' "$SYFT_FILE" 2>/dev/null | head -1)
 
+          # Fall back to skopeo registry inspection
           if [ -z "$DIGEST" ] || [ "$DIGEST" = "null" ]; then
-            echo "::warning::No SHA-256 digest found in Syft SBOM; skipping digest injection."
+            echo "Syft SBOM has no image digest; querying registry with skopeo..."
+            command -v skopeo >/dev/null 2>&1 || sudo apt-get install -y -q skopeo
+
+            if [[ "$IMAGE" == *".amazonaws.com"* ]]; then
+              ECR_TOKEN=$(AWS_ACCESS_KEY_ID="$REG_USER" AWS_SECRET_ACCESS_KEY="$REG_PASS" \
+                aws ecr get-login-password --region "$REG_REGION" 2>/dev/null)
+              DIGEST=$(skopeo inspect --username "AWS" --password "$ECR_TOKEN" \
+                docker://"$IMAGE" 2>/dev/null | jq -r '.Digest // empty' | cut -d':' -f2)
+            else
+              DIGEST=$(skopeo inspect --username "$REG_USER" --password "$REG_PASS" \
+                docker://"$IMAGE" 2>/dev/null | jq -r '.Digest // empty' | cut -d':' -f2)
+            fi
+          fi
+
+          if [ -z "$DIGEST" ] || [ "$DIGEST" = "null" ]; then
+            echo "::warning::Could not determine image digest; skipping SHA-256 injection."
             exit 0
           fi
 
