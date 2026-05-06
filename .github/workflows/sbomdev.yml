@@ -301,7 +301,7 @@ jobs:
           password: ${{ secrets.REGISTRY_PASSWORD }}
 
       - name: Configure AWS Credentials
-        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && steps.registry.outputs.type == 'ecr' }}
+        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && steps.registry.outputs.type == 'ecr' && inputs.REGISTRY_USERNAME != 'AWS' }}
         uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-access-key-id: ${{ inputs.REGISTRY_USERNAME }}
@@ -309,8 +309,16 @@ jobs:
           aws-region: ${{ inputs.REGISTRY_REGION }}
 
       - name: Login to Amazon ECR
-        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && steps.registry.outputs.type == 'ecr' }}
+        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && steps.registry.outputs.type == 'ecr' && inputs.REGISTRY_USERNAME != 'AWS' }}
         uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Login to Amazon ECR (pre-obtained token)
+        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME == 'AWS' && steps.registry.outputs.type == 'ecr' }}
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ steps.registry.outputs.host }}
+          username: AWS
+          password: ${{ secrets.REGISTRY_PASSWORD }}
 
       - name: Login to Azure Container Registry
         if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && steps.registry.outputs.type == 'acr' }}
