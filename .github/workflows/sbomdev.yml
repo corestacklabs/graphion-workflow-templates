@@ -213,8 +213,12 @@ jobs:
             command -v skopeo >/dev/null 2>&1 || sudo apt-get install -y -q skopeo
 
             if [[ "$IMAGE" == *".amazonaws.com"* ]]; then
-              ECR_TOKEN=$(AWS_ACCESS_KEY_ID="$REG_USER" AWS_SECRET_ACCESS_KEY="$REG_PASS" \
-                aws ecr get-login-password --region "$REG_REGION" 2>/dev/null)
+              if [[ "$REG_USER" == "AWS" ]]; then
+                ECR_TOKEN="$REG_PASS"
+              else
+                ECR_TOKEN=$(AWS_ACCESS_KEY_ID="$REG_USER" AWS_SECRET_ACCESS_KEY="$REG_PASS" \
+                  aws ecr get-login-password --region "$REG_REGION" 2>/dev/null)
+              fi
               DIGEST=$(skopeo inspect --username "AWS" --password "$ECR_TOKEN" \
                 docker://"$IMAGE" 2>/dev/null | jq -r '.Digest // empty' | cut -d':' -f2)
             else
