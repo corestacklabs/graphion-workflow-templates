@@ -249,16 +249,30 @@ jobs:
         if: ${{ inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '' }}
         run: |
           SBOM_FILE="${{ github.event.repository.name }}-sbom.json"
-          # Remove license entries the CoreStack API rejects:
-          #   1. name-only entries (no SPDX id) — API requires id
-          #   2. Non-standard SPDX ids not in the API's license list
-          NON_SPDX_IDS='["SMAIL-GPL"]'
-          jq --argjson non_spdx "$NON_SPDX_IDS" '
+
+          # Fetch the canonical SPDX license ID list so we can filter out any
+          # distro-specific or non-standard IDs that the CoreStack API rejects.
+          # IDs present in SPDX but not yet in the API's list are also blocked below.
+          SPDX_IDS=$(curl -sSf \
+            "https://raw.githubusercontent.com/spdx/license-list-data/main/json/licenses.json" \
+            | jq '[.licenses[].licenseId]') || {
+            echo "::warning::Could not fetch SPDX license list; skipping license sanitization."
+            exit 0
+          }
+
+          # IDs that are in the SPDX list but not accepted by the CoreStack API
+          BLOCKLIST='["SMAIL-GPL"]'
+
+          jq --argjson spdx "$SPDX_IDS" --argjson block "$BLOCKLIST" '
             walk(
               if type == "object" and has("licenses") then
                 .licenses |= map(select(
                   (.expression != null) or
-                  ((.license | has("id")) and (.license.id | IN($non_spdx[]) | not))
+                  (
+                    (.license | has("id")) and
+                    (.license.id | IN($spdx[])) and
+                    (.license.id | IN($block[]) | not)
+                  )
                 )) |
                 if (.licenses | length) == 0 then del(.licenses) else . end
               else .
