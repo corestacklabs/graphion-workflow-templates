@@ -314,11 +314,10 @@ jobs:
 
       - name: Login to Amazon ECR (pre-obtained token)
         if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME == 'AWS' && steps.registry.outputs.type == 'ecr' }}
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ steps.registry.outputs.host }}
-          username: AWS
-          password: ${{ secrets.REGISTRY_PASSWORD }}
+        env:
+          ECR_TOKEN: ${{ secrets.REGISTRY_PASSWORD }}
+          ECR_REGISTRY: ${{ steps.registry.outputs.host }}
+        run: echo "$ECR_TOKEN" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
       - name: Login to Azure Container Registry
         if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && steps.registry.outputs.type == 'acr' }}
