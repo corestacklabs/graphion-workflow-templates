@@ -245,6 +245,28 @@ jobs:
           cp "$OUT_FILE" "$SBOM_FILE"
           echo "SHA-256 digest added to SBOM. Output: $OUT_FILE"
 
+      - name: Sanitize SBOM license entries
+        if: ${{ inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '' }}
+        run: |
+          SBOM_FILE="${{ github.event.repository.name }}-sbom.json"
+          # Remove license entries the CoreStack API rejects:
+          #   1. name-only entries (no SPDX id) — API requires id
+          #   2. Non-standard SPDX ids not in the API's license list
+          NON_SPDX_IDS='["SMAIL-GPL"]'
+          jq --argjson non_spdx "$NON_SPDX_IDS" '
+            walk(
+              if type == "object" and has("licenses") then
+                .licenses |= map(select(
+                  (.expression != null) or
+                  ((.license | has("id")) and (.license.id | IN($non_spdx[]) | not))
+                )) |
+                if (.licenses | length) == 0 then del(.licenses) else . end
+              else .
+              end
+            )
+          ' "$SBOM_FILE" > /tmp/sbom-clean.json && mv /tmp/sbom-clean.json "$SBOM_FILE"
+          echo "License sanitization complete."
+
       - name: Upload Grype Artifact
         if: ${{ inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '' }}
         uses: actions/upload-artifact@v6
