@@ -250,17 +250,24 @@ jobs:
         run: |
           SBOM_FILE="${{ github.event.repository.name }}-sbom.json"
 
-          # IDs in SPDX but not accepted by the CoreStack API
-          BLOCKLIST='["SMAIL-GPL"]'
+          # The API uses JsonStrictValidator(SchemaVersion.V1_6) from cyclonedx-python-lib.
+          # Fetch the valid SPDX license IDs from the same CycloneDX 1.6 schema it validates against.
+          # The schema embeds the SPDX enum; any id not in that enum fails strict validation.
+          VALID_IDS=$(curl -sSf --max-time 15 \
+            "https://cyclonedx.org/schema/bom-1.6.schema.json" \
+            | jq '[.. | objects | select(has("enum")) | .enum[] | select(type == "string")] | unique' \
+            2>/dev/null)
 
-          # Fetch the canonical SPDX license ID list (pinned tag for stability).
-          # Falls back to removing only name-only entries if the fetch fails.
-          SPDX_IDS=$(curl -sSf --max-time 15 \
-            "https://raw.githubusercontent.com/spdx/license-list-data/v3.24.0/json/licenses.json" \
-            | jq '[.licenses[].licenseId]' 2>/dev/null)
+          # Fall back to pinned SPDX list if schema fetch fails
+          if [ -z "$VALID_IDS" ] || [ "$VALID_IDS" = "null" ] || [ "$VALID_IDS" = "[]" ]; then
+            echo "::warning::CycloneDX schema fetch failed; falling back to SPDX v3.24.0 license list."
+            VALID_IDS=$(curl -sSf --max-time 15 \
+              "https://raw.githubusercontent.com/spdx/license-list-data/v3.24.0/json/licenses.json" \
+              | jq '[.licenses[].licenseId]' 2>/dev/null)
+          fi
 
-          if [ -z "$SPDX_IDS" ] || [ "$SPDX_IDS" = "null" ]; then
-            echo "::warning::Could not fetch SPDX license list; removing only name-only license entries."
+          if [ -z "$VALID_IDS" ] || [ "$VALID_IDS" = "null" ] || [ "$VALID_IDS" = "[]" ]; then
+            echo "::warning::All license ID fetches failed; removing only name-only license entries."
             jq '
               walk(
                 if type == "object" and has("licenses") then
@@ -268,24 +275,22 @@ jobs:
                   if (.licenses | length) == 0 then del(.licenses) else . end
                 else . end
               )
-            ' "$SBOM_FILE" > /tmp/sbom-clean.json && mv /tmp/sbom-clean.json "$SBOM_FILE"
+            ' "$SBOM_FILE" > /tmp/sbom-clean.json
           else
-            jq --argjson spdx "$SPDX_IDS" --argjson block "$BLOCKLIST" '
+            jq --argjson valid "$VALID_IDS" '
               walk(
                 if type == "object" and has("licenses") then
                   .licenses |= map(select(
                     (.expression != null) or
-                    (
-                      (.license | has("id")) and
-                      (.license.id | IN($spdx[])) and
-                      (.license.id | IN($block[]) | not)
-                    )
+                    ((.license | has("id")) and (.license.id | IN($valid[])))
                   )) |
                   if (.licenses | length) == 0 then del(.licenses) else . end
                 else . end
               )
-            ' "$SBOM_FILE" > /tmp/sbom-clean.json && mv /tmp/sbom-clean.json "$SBOM_FILE"
+            ' "$SBOM_FILE" > /tmp/sbom-clean.json
           fi
+
+          mv /tmp/sbom-clean.json "$SBOM_FILE"
           echo "License sanitization complete."
 
       - name: Upload Grype Artifact
