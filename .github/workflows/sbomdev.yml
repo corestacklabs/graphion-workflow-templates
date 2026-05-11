@@ -77,6 +77,11 @@ on:
         type: string
         required: false
         default: 'false'
+      sanitize_licenses:
+        description: 'Strip invalid SPDX license entries from the SBOM before upload (true/false)'
+        type: string
+        required: false
+        default: 'false'
 
 env:
   API_BASE: ${{ inputs.api_base_url }}
@@ -246,7 +251,7 @@ jobs:
           echo "SHA-256 digest added to SBOM. Output: $OUT_FILE"
 
       - name: Sanitize SBOM license entries
-        if: ${{ inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '' }}
+        if: ${{ inputs.sanitize_licenses == 'true' && (inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '') }}
         run: |
           SBOM_FILE="${{ github.event.repository.name }}-sbom.json"
 
