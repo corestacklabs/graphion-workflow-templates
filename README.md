@@ -56,6 +56,7 @@ The following secrets must be available in the client's organizational secrets. 
 | `build_id` | String | No | Yes | 1.0.1 | Build/version identifier (defaults to github.run_id-github.run_attempts) - must be unique |
 | `api_base_url` | String | No | No | api.corestack.io | CoreStack API base URL (defaults to production CoreStack API) |
 | `force_upload` | String | No | No | false | Allow upload if same content exists elsewhere (true/false) |
+| `sanitize_licenses` | String | No | No | false | Strip invalid SPDX license entries from the SBOM before upload (true/false) |
 
 ### Notes
 

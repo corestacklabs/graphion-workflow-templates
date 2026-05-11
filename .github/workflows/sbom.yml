@@ -77,6 +77,11 @@ on:
         type: string
         required: false
         default: 'false'
+      sanitize_licenses:
+        description: 'Strip invalid SPDX license entries from the SBOM before upload (true/false)'
+        type: string
+        required: false
+        default: 'false'
 
 env:
   API_BASE: ${{ inputs.api_base_url }}
@@ -213,8 +218,12 @@ jobs:
             command -v skopeo >/dev/null 2>&1 || sudo apt-get install -y -q skopeo
 
             if [[ "$IMAGE" == *".amazonaws.com"* ]]; then
-              ECR_TOKEN=$(AWS_ACCESS_KEY_ID="$REG_USER" AWS_SECRET_ACCESS_KEY="$REG_PASS" \
-                aws ecr get-login-password --region "$REG_REGION" 2>/dev/null)
+              if [[ "$REG_USER" == "AWS" ]]; then
+                ECR_TOKEN="$REG_PASS"
+              else
+                ECR_TOKEN=$(AWS_ACCESS_KEY_ID="$REG_USER" AWS_SECRET_ACCESS_KEY="$REG_PASS" \
+                  aws ecr get-login-password --region "$REG_REGION" 2>/dev/null)
+              fi
               DIGEST=$(skopeo inspect --username "AWS" --password "$ECR_TOKEN" \
                 docker://"$IMAGE" 2>/dev/null | jq -r '.Digest // empty' | cut -d':' -f2)
             else
@@ -240,6 +249,54 @@ jobs:
 
           cp "$OUT_FILE" "$SBOM_FILE"
           echo "SHA-256 digest added to SBOM. Output: $OUT_FILE"
+
+      - name: Sanitize SBOM license entries
+        if: ${{ inputs.sanitize_licenses == 'true' && (inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '') }}
+        run: |
+          SBOM_FILE="${{ github.event.repository.name }}-sbom.json"
+
+          # The API uses JsonStrictValidator(SchemaVersion.V1_6) from cyclonedx-python-lib.
+          # Fetch the valid SPDX license IDs from the same CycloneDX 1.6 schema it validates against.
+          # The schema embeds the SPDX enum; any id not in that enum fails strict validation.
+          VALID_IDS=$(curl -sSf --max-time 15 \
+            "https://cyclonedx.org/schema/bom-1.6.schema.json" \
+            | jq '[.. | objects | select(has("enum")) | .enum[] | select(type == "string")] | unique' \
+            2>/dev/null)
+
+          # Fall back to pinned SPDX list if schema fetch fails
+          if [ -z "$VALID_IDS" ] || [ "$VALID_IDS" = "null" ] || [ "$VALID_IDS" = "[]" ]; then
+            echo "::warning::CycloneDX schema fetch failed; falling back to SPDX v3.24.0 license list."
+            VALID_IDS=$(curl -sSf --max-time 15 \
+              "https://raw.githubusercontent.com/spdx/license-list-data/v3.24.0/json/licenses.json" \
+              | jq '[.licenses[].licenseId]' 2>/dev/null)
+          fi
+
+          if [ -z "$VALID_IDS" ] || [ "$VALID_IDS" = "null" ] || [ "$VALID_IDS" = "[]" ]; then
+            echo "::warning::All license ID fetches failed; removing only name-only license entries."
+            jq '
+              walk(
+                if type == "object" and has("licenses") then
+                  .licenses |= map(select(.expression != null or (.license | has("id")))) |
+                  if (.licenses | length) == 0 then del(.licenses) else . end
+                else . end
+              )
+            ' "$SBOM_FILE" > /tmp/sbom-clean.json
+          else
+            jq --argjson valid "$VALID_IDS" '
+              walk(
+                if type == "object" and has("licenses") then
+                  .licenses |= map(select(
+                    (.expression != null) or
+                    ((.license | has("id")) and (.license.id | IN($valid[])))
+                  )) |
+                  if (.licenses | length) == 0 then del(.licenses) else . end
+                else . end
+              )
+            ' "$SBOM_FILE" > /tmp/sbom-clean.json
+          fi
+
+          mv /tmp/sbom-clean.json "$SBOM_FILE"
+          echo "License sanitization complete."
 
       - name: Upload Grype Artifact
         if: ${{ inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '' }}
@@ -297,7 +354,7 @@ jobs:
           password: ${{ secrets.REGISTRY_PASSWORD }}
 
       - name: Configure AWS Credentials
-        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && steps.registry.outputs.type == 'ecr' }}
+        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && steps.registry.outputs.type == 'ecr' && inputs.REGISTRY_USERNAME != 'AWS' }}
         uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-access-key-id: ${{ inputs.REGISTRY_USERNAME }}
@@ -305,8 +362,15 @@ jobs:
           aws-region: ${{ inputs.REGISTRY_REGION }}
 
       - name: Login to Amazon ECR
-        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && steps.registry.outputs.type == 'ecr' }}
+        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && steps.registry.outputs.type == 'ecr' && inputs.REGISTRY_USERNAME != 'AWS' }}
         uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Login to Amazon ECR (pre-obtained token)
+        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME == 'AWS' && steps.registry.outputs.type == 'ecr' }}
+        env:
+          ECR_TOKEN: ${{ secrets.REGISTRY_PASSWORD }}
+          ECR_REGISTRY: ${{ steps.registry.outputs.host }}
+        run: echo "$ECR_TOKEN" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
       - name: Login to Azure Container Registry
         if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && steps.registry.outputs.type == 'acr' }}
