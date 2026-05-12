@@ -670,11 +670,40 @@ jobs:
             exit 1
           fi
           RESULT_COUNT=$(echo "$RESP_BODY" | jq '(.data.results // .results) | length')
+          echo "Project list returned $RESULT_COUNT result(s) for '${{ inputs.project_name }}':"
+          echo "$RESP_BODY" | jq '(.data.results // .results)'
           if [ "$RESULT_COUNT" -eq 0 ]; then
             echo "::error::No project found for project_name: ${{ inputs.project_name }}"
             exit 1
           fi
-          PROJECT_ID=$(echo "$RESP_BODY" | jq -r '(.data.results // .results)[0] // empty')
+
+          # Results may be plain ID strings or objects. Handle both.
+          # For objects, prefer exact name match over [0] to guard against
+          # the API's substring matching returning a wrong project first
+          # (e.g. "governance" matching "security_governance").
+          FIRST=$(echo "$RESP_BODY" | jq -c '(.data.results // .results)[0]')
+          FIRST_TYPE=$(echo "$FIRST" | jq -r 'type')
+
+          if [ "$FIRST_TYPE" = "object" ]; then
+            PROJECT_ID=$(echo "$RESP_BODY" | jq -r \
+              --arg name "${{ inputs.project_name }}" \
+              '(.data.results // .results)
+               | map(select(.name == $name or .project_name == $name))
+               | .[0]
+               | (.project_id // .id // .)
+               // empty')
+            if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "null" ]; then
+              echo "::warning::No exact name match in results; using first result."
+              PROJECT_ID=$(echo "$FIRST" | jq -r '.project_id // .id // .')
+            fi
+          else
+            # Plain ID strings — cannot filter by name client-side.
+            if [ "$RESULT_COUNT" -gt 1 ]; then
+              echo "::warning::$RESULT_COUNT IDs returned for name filter '${{ inputs.project_name }}' — API uses substring matching. Using [0]; verify it is the correct project."
+            fi
+            PROJECT_ID=$(echo "$FIRST" | jq -r '.')
+          fi
+
           if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "null" ]; then
             echo "::error::No project ID in results: $RESP_BODY"
             exit 1
