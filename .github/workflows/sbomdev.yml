@@ -732,6 +732,17 @@ jobs:
           echo "project_id=$PROJECT_ID" >> $GITHUB_OUTPUT
           echo "Project ID: $PROJECT_ID"
 
+          # Log the actual project name for this ID so mismatches are visible in the workflow log.
+          ITEM_RESP=$(curl -s -X GET \
+            "${{ env.API_BASE }}/v1/appsecops/projects/item/${PROJECT_ID}" \
+            -H "Content-Type: application/json" \
+            -H "X-Auth-Token: $AUTH_TOKEN")
+          ACTUAL_NAME=$(echo "$ITEM_RESP" | jq -r '.name // .data.name // "unknown"')
+          echo "Resolved project name: $ACTUAL_NAME"
+          if [ "$ACTUAL_NAME" != "${{ inputs.project_name }}" ] && [ "$ACTUAL_NAME" != "unknown" ]; then
+            echo "::warning::Project name mismatch — expected '${{ inputs.project_name }}' but resolved '$ACTUAL_NAME' (ID: $PROJECT_ID). Check that the tag filter is applied to the correct project in CoreStack."
+          fi
+
       - name: Create or Find SBOM Definition
         id: sbom-def
         env:
