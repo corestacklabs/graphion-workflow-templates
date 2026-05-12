@@ -756,16 +756,16 @@ jobs:
           PROJECT_ID="${{ steps.project.outputs.project_id }}"
           PROJECT_NAME="${{ inputs.project_name }}"
 
-          # Step 1: Proactively look up existing SBOM definition by name + project.
-          # This avoids hitting create when a definition (and version) already exist,
-          # which returns "Project is already associated with another SBOM definition".
+          # Step 1: Proactively look up existing SBOM definition by project only (no search/name
+          # filter) to avoid the API's substring matching returning a definition from a different
+          # project (e.g. governance__kcs_sbom matching under security_governance__kcs).
+          # If results are objects, filter for exact name match client-side.
           SEARCH_BODY=$(jq -n \
             --arg tenant_id "$TENANT_ID" \
-            --arg search "$SBOM_NAME" \
             --arg project_id "$PROJECT_ID" \
             '{
               list_context: { batch_size: 100, batch_offset: 0 },
-              filters: { tenant_id: $tenant_id, search: $search, appsecops_project_id: $project_id }
+              filters: { tenant_id: $tenant_id, appsecops_project_id: $project_id }
             }')
           SEARCH_RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/appsecops/sbom_definition/list" \
             -H "Content-Type: application/json" \
@@ -773,17 +773,27 @@ jobs:
             -d "$SEARCH_BODY")
           SEARCH_HTTP_CODE=$(echo "$SEARCH_RESP" | tail -n1)
           SEARCH_RESP_BODY=$(echo "$SEARCH_RESP" | sed '$d')
+          echo "SBOM definition search (project_id=$PROJECT_ID) HTTP $SEARCH_HTTP_CODE:"
+          echo "$SEARCH_RESP_BODY" | jq '(.data.results // .results)'
 
           SBOM_DEF_ID=""
 
           if [ "$SEARCH_HTTP_CODE" -ge 200 ] && [ "$SEARCH_HTTP_CODE" -lt 300 ]; then
-            FIRST=$(echo "$SEARCH_RESP_BODY" | jq -c '(.data.results // .results)[0] // empty')
-            if [ -n "$FIRST" ] && [ "$FIRST" != "null" ]; then
-              FIRST_TYPE=$(echo "$FIRST" | jq -r 'type')
-              if [ "$FIRST_TYPE" = "object" ]; then
-                SBOM_DEF_ID=$(echo "$FIRST" | jq -r '.sbom_definition_id // .id // empty')
+            # Prefer exact name match; fall back to first result for plain-string ID arrays.
+            MATCH=$(echo "$SEARCH_RESP_BODY" | jq -c \
+              --arg name "$SBOM_NAME" \
+              '(.data.results // .results)
+               | map(select(type == "object" and (.name == $name or .sbom_definition_name == $name)))
+               | .[0] // empty')
+            if [ -z "$MATCH" ] || [ "$MATCH" = "null" ]; then
+              MATCH=$(echo "$SEARCH_RESP_BODY" | jq -c '(.data.results // .results)[0] // empty')
+            fi
+            if [ -n "$MATCH" ] && [ "$MATCH" != "null" ]; then
+              MATCH_TYPE=$(echo "$MATCH" | jq -r 'type')
+              if [ "$MATCH_TYPE" = "object" ]; then
+                SBOM_DEF_ID=$(echo "$MATCH" | jq -r '.sbom_definition_id // .id // empty')
               else
-                SBOM_DEF_ID=$(echo "$FIRST" | jq -r '.')
+                SBOM_DEF_ID=$(echo "$MATCH" | jq -r '.')
               fi
             fi
           fi
