@@ -504,11 +504,30 @@ jobs:
           name: hadolint-json-report-${{ inputs.project_name }}
           path: ${{ github.event.repository.name }}-hadolint.json
 
+      - name: Prepare image reference for Dockle
+        id: dockle-ref
+        if: ${{ inputs.IMAGE != '' }}
+        env:
+          IMAGE: ${{ inputs.IMAGE }}
+        run: |
+          # Dockle fails with digest references (@sha256:...) because it re-fetches
+          # the manifest and validates the digest, which fails when ACR returns a
+          # manifest list for an inner platform manifest digest. Pull the image with
+          # Docker (which handles this correctly) and retag it locally so Dockle
+          # scans the local image without hitting the registry digest validation.
+          if echo "$IMAGE" | grep -q '@sha256:'; then
+            docker pull "$IMAGE"
+            docker tag "$IMAGE" dockle-scan-target:local
+            echo "ref=dockle-scan-target:local" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=$IMAGE" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run Dockle scan and generate JSON report
         if: ${{ inputs.IMAGE != '' }}
         uses: erzz/dockle-action@v1
         with:
-          image: ${{ inputs.IMAGE }}
+          image: ${{ steps.dockle-ref.outputs.ref }}
           report-format: json
           report-name: ${{ github.event.repository.name }}-dockle
           exit-code: 0
