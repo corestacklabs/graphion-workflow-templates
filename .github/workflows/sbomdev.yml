@@ -57,6 +57,11 @@ on:
         description: 'AppSecOps project name (e.g. Payment Service) - used to resolve project_id'
         type: string
         required: false
+      project_tags:
+        description: 'Optional tag filter to disambiguate project lookup when names collide (e.g. "service=governance"). Parsed as key=value and sent as tags filter to the projects/list API.'
+        type: string
+        required: false
+        default: ''
       sbom_definition_name:
         description: 'Name for the SBOM definition (defaults to filename without extension)'
         type: string
@@ -652,13 +657,29 @@ jobs:
           AUTH_TOKEN: ${{ steps.auth.outputs.token }}
           TENANT_ID: ${{ steps.auth.outputs.tenant_id }}
         run: |
-          BODY=$(jq -n \
-            --arg tenant_id "$TENANT_ID" \
-            --arg project_name "${{ inputs.project_name }}" \
-            '{
-              filters: { tenant_id: $tenant_id, name: [$project_name] },
-              list_context: { batch_size: 10, batch_offset: 0 }
-            }')
+          TAG_INPUT="${{ inputs.project_tags }}"
+          if [ -n "$TAG_INPUT" ]; then
+            TAG_KEY="${TAG_INPUT%%=*}"
+            TAG_VAL="${TAG_INPUT#*=}"
+            echo "Applying tag filter: $TAG_KEY=$TAG_VAL"
+            BODY=$(jq -n \
+              --arg tenant_id "$TENANT_ID" \
+              --arg project_name "${{ inputs.project_name }}" \
+              --arg tag_key "$TAG_KEY" \
+              --arg tag_val "$TAG_VAL" \
+              '{
+                filters: { tenant_id: $tenant_id, name: [$project_name], tags: [{ key: $tag_key, value: $tag_val }] },
+                list_context: { batch_size: 10, batch_offset: 0 }
+              }')
+          else
+            BODY=$(jq -n \
+              --arg tenant_id "$TENANT_ID" \
+              --arg project_name "${{ inputs.project_name }}" \
+              '{
+                filters: { tenant_id: $tenant_id, name: [$project_name] },
+                list_context: { batch_size: 10, batch_offset: 0 }
+              }')
+          fi
           RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/appsecops/projects/list" \
             -H "Content-Type: application/json" \
             -H "X-Auth-Token: $AUTH_TOKEN" \
