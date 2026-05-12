@@ -62,6 +62,11 @@ on:
         type: string
         required: false
         default: ''
+      sbom_definition_tags:
+        description: 'Optional tag filter to disambiguate SBOM definition lookup when names collide (e.g. "service=governance"). Parsed as key=value and sent as tags filter to the sbom_definition/list API.'
+        type: string
+        required: false
+        default: ''
       sbom_definition_name:
         description: 'Name for the SBOM definition (defaults to filename without extension)'
         type: string
@@ -756,17 +761,34 @@ jobs:
           PROJECT_ID="${{ steps.project.outputs.project_id }}"
           PROJECT_NAME="${{ inputs.project_name }}"
 
-          # Step 1: Proactively look up existing SBOM definition by project only (no search/name
-          # filter) to avoid the API's substring matching returning a definition from a different
-          # project (e.g. governance__kcs_sbom matching under security_governance__kcs).
-          # If results are objects, filter for exact name match client-side.
-          SEARCH_BODY=$(jq -n \
-            --arg tenant_id "$TENANT_ID" \
-            --arg project_id "$PROJECT_ID" \
-            '{
-              list_context: { batch_size: 100, batch_offset: 0 },
-              filters: { tenant_id: $tenant_id, appsecops_project_id: $project_id }
-            }')
+          # Step 1: Proactively look up existing SBOM definition by name + project.
+          # When sbom_definition_tags is provided, include it in the filter to
+          # disambiguate definitions whose names collide across projects.
+          SBOM_TAG_INPUT="${{ inputs.sbom_definition_tags }}"
+          if [ -n "$SBOM_TAG_INPUT" ]; then
+            SBOM_TAG_KEY="${SBOM_TAG_INPUT%%=*}"
+            SBOM_TAG_VAL="${SBOM_TAG_INPUT#*=}"
+            echo "Applying tag filter to SBOM definition search: $SBOM_TAG_KEY=$SBOM_TAG_VAL"
+            SEARCH_BODY=$(jq -n \
+              --arg tenant_id "$TENANT_ID" \
+              --arg search "$SBOM_NAME" \
+              --arg project_id "$PROJECT_ID" \
+              --arg tag_key "$SBOM_TAG_KEY" \
+              --arg tag_val "$SBOM_TAG_VAL" \
+              '{
+                list_context: { batch_size: 100, batch_offset: 0 },
+                filters: { tenant_id: $tenant_id, search: $search, appsecops_project_id: $project_id, tags: [{ key: $tag_key, value: $tag_val }] }
+              }')
+          else
+            SEARCH_BODY=$(jq -n \
+              --arg tenant_id "$TENANT_ID" \
+              --arg search "$SBOM_NAME" \
+              --arg project_id "$PROJECT_ID" \
+              '{
+                list_context: { batch_size: 100, batch_offset: 0 },
+                filters: { tenant_id: $tenant_id, search: $search, appsecops_project_id: $project_id }
+              }')
+          fi
           SEARCH_RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/appsecops/sbom_definition/list" \
             -H "Content-Type: application/json" \
             -H "X-Auth-Token: $AUTH_TOKEN" \
