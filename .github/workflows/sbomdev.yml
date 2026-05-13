@@ -206,66 +206,6 @@ jobs:
             curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
             grype sbom:"${{ github.event.repository.name }}-sbom.cdx.json" -o cyclonedx-json > ${{ github.event.repository.name }}-sbom.json
 
-      - name: Debug - Image manifest inspection
-        if: ${{ inputs.IMAGE != '' }}
-        env:
-          REG_USER: ${{ inputs.REGISTRY_USERNAME }}
-          REG_PASS: ${{ secrets.REGISTRY_PASSWORD }}
-          IMAGE: ${{ inputs.IMAGE }}
-        run: |
-          command -v skopeo >/dev/null 2>&1 || sudo apt-get install -y -q skopeo
-
-          echo "========================================"
-          echo "IMAGE REFERENCE: $IMAGE"
-          echo "========================================"
-
-          # Save raw manifest to file so we can both hash it and parse it
-          skopeo inspect --raw --username "$REG_USER" --password "$REG_PASS" \
-            docker://"$IMAGE" > /tmp/raw_manifest.json 2>/dev/null \
-            && echo "Raw manifest fetched successfully" \
-            || { echo "::warning::Could not fetch raw manifest"; exit 0; }
-
-          RAW_DIGEST=$(sha256sum /tmp/raw_manifest.json | awk '{print $1}')
-          MEDIA_TYPE=$(jq -r '.mediaType // "not set"' /tmp/raw_manifest.json)
-          IS_INDEX=$(jq 'has("manifests")' /tmp/raw_manifest.json)
-
-          echo ""
-          echo "--- Tag-level manifest ---"
-          echo "  mediaType : $MEDIA_TYPE"
-          echo "  sha256    : $RAW_DIGEST   (this is what ACR/registry shows for this tag)"
-          echo "  isIndex   : $IS_INDEX"
-
-          if [ "$IS_INDEX" = "true" ]; then
-            echo ""
-            echo "--- Manifest list entries ---"
-            jq -r '.manifests[] | "  \(.digest)  platform=\(.platform.os // "unknown")/\(.platform.architecture // "unknown")  type=\(.mediaType)"' \
-              /tmp/raw_manifest.json
-
-            echo ""
-            echo "--- linux/amd64 image manifest digest (what skopeo inspect resolves to) ---"
-            AMD64_DIGEST=$(jq -r '.manifests[] | select((.platform.os == "linux") and (.platform.architecture == "amd64")) | .digest' \
-              /tmp/raw_manifest.json | head -1)
-            echo "  $AMD64_DIGEST"
-          fi
-
-          echo ""
-          echo "--- skopeo inspect (platform-resolved, non-raw) ---"
-          skopeo inspect --username "$REG_USER" --password "$REG_PASS" docker://"$IMAGE" 2>/dev/null \
-            | jq '{Digest: .Digest, Architecture: .Architecture, Os: .Os, Name: .Name}' \
-            || echo "  skopeo inspect failed"
-
-          echo ""
-          echo "--- Syft SBOM digest (what Syft captured) ---"
-          SYFT_FILE="${{ github.event.repository.name }}-sbom.cdx.json"
-          if [ -f "$SYFT_FILE" ]; then
-            SYFT_DIGEST=$(jq -r '(.metadata.component.hashes // [])[] | select(.alg == "SHA-256") | .content' \
-              "$SYFT_FILE" 2>/dev/null | head -1)
-            echo "  ${SYFT_DIGEST:-none found}"
-          else
-            echo "  Syft SBOM file not found"
-          fi
-          echo "========================================"
-
       - name: Add SHA-256 image digest to SBOM
         if: ${{ inputs.IMAGE != '' }}
         env:
@@ -696,8 +636,6 @@ jobs:
             exit 1
           fi
           RESULT_COUNT=$(echo "$RESP_BODY" | jq '(.data.results // .results) | length')
-          echo "Project list returned $RESULT_COUNT result(s) for '${{ inputs.project_name }}':"
-          echo "$RESP_BODY" | jq '(.data.results // .results)'
           if [ "$RESULT_COUNT" -eq 0 ]; then
             echo "::error::No project found for project_name: ${{ inputs.project_name }}"
             exit 1
@@ -795,9 +733,6 @@ jobs:
             -d "$SEARCH_BODY")
           SEARCH_HTTP_CODE=$(echo "$SEARCH_RESP" | tail -n1)
           SEARCH_RESP_BODY=$(echo "$SEARCH_RESP" | sed '$d')
-          echo "SBOM definition search (project_id=$PROJECT_ID) HTTP $SEARCH_HTTP_CODE:"
-          echo "$SEARCH_RESP_BODY" | jq '(.data.results // .results)'
-
           SBOM_DEF_ID=""
 
           if [ "$SEARCH_HTTP_CODE" -ge 200 ] && [ "$SEARCH_HTTP_CODE" -lt 300 ]; then
