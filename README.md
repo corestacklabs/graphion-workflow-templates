@@ -52,7 +52,9 @@ The following secrets must be available in the client's organizational secrets. 
 | Name | Type | Required | Unique | Default | Description |
 |---|---|---|---|---|---|
 | `project_name` | String | Yes | Yes | | AppSecOps project name (e.g. Payment Service) - used to resolve project_id |
+| `project_tags` | String | No | No | | Optional tag filter to disambiguate project lookup when multiple projects share the same name (e.g. `service=governance`). Parsed as `key=value`. |
 | `sbom_definition_name` | String | No | Yes | repo name | Name for the SBOM definition (defaults to filename without extension) |
+| `sbom_definition_tags` | String | No | No | | Optional tag filter to disambiguate SBOM definition lookup when names collide across projects (e.g. `service=governance`). Parsed as `key=value`. |
 | `build_id` | String | No | Yes | 1.0.1 | Build/version identifier (defaults to github.run_id-github.run_attempts) - must be unique |
 | `api_base_url` | String | No | No | api.corestack.io | CoreStack API base URL (defaults to production CoreStack API) |
 | `force_upload` | String | No | No | false | Allow upload if same content exists elsewhere (true/false) |
