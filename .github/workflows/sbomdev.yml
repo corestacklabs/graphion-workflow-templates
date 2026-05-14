@@ -887,12 +887,16 @@ jobs:
           if [ ${#FORMATTED_BUILD_ID} -lt 3 ]; then
             FORMATTED_BUILD_ID="${FORMATTED_BUILD_ID}.0.${NEXT_VERSION}"
           else
-            # if the last character is a number, increase it by 1
+            # if the last character is a number, increase the trailing numeric segment by 1
             if [[ "${FORMATTED_BUILD_ID}" =~ [0-9]$ ]]; then
-              LAST_CHAR=$(echo "$FORMATTED_BUILD_ID" | grep -oE '[0-9]$')
-              PREFIX=$(echo "$FORMATTED_BUILD_ID" | sed 's/[0-9]$//')
-              INCREMENTED=$((LAST_CHAR + 1))
-              FORMATTED_BUILD_ID="${PREFIX}${INCREMENTED}"
+              LAST_NUM=$(echo "$FORMATTED_BUILD_ID" | grep -oE '[0-9]+$')
+              PREFIX=$(echo "$FORMATTED_BUILD_ID" | sed 's/[0-9]*$//')
+              NEXT_NUM=$((10#$LAST_NUM + 1))
+              # preserve zero-padding width (e.g. "01"→"02", "09"→"10")
+              if [[ ${#LAST_NUM} -gt 1 && "$LAST_NUM" =~ ^0 ]]; then
+                NEXT_NUM=$(printf "%0${#LAST_NUM}d" $NEXT_NUM)
+              fi
+              FORMATTED_BUILD_ID="${PREFIX}${NEXT_NUM}"
             else
               # if the last character is not a number, find the first number from the right and increment it, otherwise append NEXT_VERSION
               LAST_NUMBER=$(echo "$FORMATTED_BUILD_ID" | grep -oE '[0-9]' | tail -1)
