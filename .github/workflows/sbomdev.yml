@@ -917,11 +917,12 @@ jobs:
         run: |
           attach_and_upload() {
             local FILENAME="$1"
+            local DISPLAY_NAME="${2:-$1}"
             local RESP HTTP_CODE BODY ATTACHMENT_ID
             RESP=$(curl -s -w "\n%{http_code}" -X POST "${{ env.API_BASE }}/v1/attachment/create" \
               -H "Content-Type: application/json" \
               -H "X-Auth-Token: $AUTH_TOKEN" \
-              -d "{\"name\":\"$FILENAME\",\"file_name\":\"$FILENAME\"}")
+              -d "{\"name\":\"$DISPLAY_NAME\",\"file_name\":\"$DISPLAY_NAME\"}")
             HTTP_CODE=$(echo "$RESP" | tail -n1)
             BODY=$(echo "$RESP" | sed '$d')
             if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
@@ -946,7 +947,8 @@ jobs:
             echo "$ATTACHMENT_ID"
           }
 
-          SBOM_ID=$(attach_and_upload "${REPO_NAME}-sbom.json")
+          PROJECT_SLUG=$(echo "${{ inputs.project_name }}" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+          SBOM_ID=$(attach_and_upload "${REPO_NAME}-sbom.json" "${PROJECT_SLUG}-sbom.json")
           echo "sbom_attachment_id=$SBOM_ID" >> $GITHUB_OUTPUT
           echo "SBOM attachment uploaded: $SBOM_ID"
 
