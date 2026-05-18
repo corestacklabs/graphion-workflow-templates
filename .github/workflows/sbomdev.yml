@@ -174,15 +174,76 @@ jobs:
                 - sha256
           EOF
 
-        # Syft uses go-containerregistry to login to any registry with registry-username and registry-password
-        # ACR, ECR, GCR, Harbor, GHCR
+      - name: Determine Container Registry
+        id: registry
+        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' }}
+        run: |
+          HOST=$(echo "${{ inputs.IMAGE }}" | cut -d'/' -f1)
+          # Bare image names (e.g. "nginx:latest") have no dot or colon in the first segment
+          if [[ "$HOST" != *.* && "$HOST" != *:* ]]; then
+            TYPE="dockerhub"
+            HOST="docker.io"
+          elif [[ "$HOST" == *".amazonaws.com" ]]; then
+            TYPE="ecr"
+          elif [[ "$HOST" == *".azurecr.io" ]]; then
+            TYPE="acr"
+          elif [[ "$HOST" == "gcr.io" || "$HOST" == *".gcr.io" ]]; then
+            TYPE="gcr"
+          elif [[ "$HOST" == "ghcr.io" ]]; then
+            TYPE="ghcr"
+          elif [[ "$HOST" == "docker.io" ]]; then
+            TYPE="dockerhub"
+          else
+            TYPE="harbor"
+          fi
+          echo "type=$TYPE" >> $GITHUB_OUTPUT
+          echo "host=$HOST" >> $GITHUB_OUTPUT
+          echo "Registry type: $TYPE, host: $HOST"
+
+      - name: Login to Docker-Compatible Registry
+        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && contains(fromJSON('["dockerhub","ghcr","gcr","harbor"]'), steps.registry.outputs.type) }}
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ steps.registry.outputs.host }}
+          username: ${{ inputs.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Configure AWS Credentials
+        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && steps.registry.outputs.type == 'ecr' && inputs.REGISTRY_USERNAME != 'AWS' }}
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ inputs.REGISTRY_USERNAME }}
+          aws-secret-access-key: ${{ secrets.REGISTRY_PASSWORD }}
+          aws-region: ${{ inputs.REGISTRY_REGION }}
+
+      - name: Login to Amazon ECR
+        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && steps.registry.outputs.type == 'ecr' && inputs.REGISTRY_USERNAME != 'AWS' }}
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Login to Amazon ECR (pre-obtained token)
+        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME == 'AWS' && steps.registry.outputs.type == 'ecr' }}
+        env:
+          ECR_TOKEN: ${{ secrets.REGISTRY_PASSWORD }}
+          ECR_REGISTRY: ${{ steps.registry.outputs.host }}
+        run: echo "$ECR_TOKEN" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+      - name: Login to Azure Container Registry
+        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && steps.registry.outputs.type == 'acr' }}
+        uses: azure/docker-login@v2
+        with:
+          login-server: ${{ steps.registry.outputs.host }}
+          username: ${{ inputs.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Pull image
+        if: ${{ inputs.IMAGE != '' }}
+        run: docker pull "${{ inputs.IMAGE }}"
+
       - name: Create SBOM With Syft Image Scan
         if: ${{ inputs.IMAGE != '' }}
         uses: anchore/sbom-action@v0
         with:
-         image: ${{ inputs.IMAGE }}
-         registry-username: ${{ inputs.REGISTRY_USERNAME }}
-         registry-password: ${{ secrets.REGISTRY_PASSWORD }}
+         image: docker-daemon:${{ inputs.IMAGE }}
          format: cyclonedx-json
          output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
          config: .syft.yaml
@@ -224,31 +285,9 @@ jobs:
           DIGEST_TOOL="${{ inputs.digest_tool }}"
 
           if [ "$DIGEST_TOOL" = "docker" ]; then
-            # Use a temp Docker config dir so credentials aren't written to ~/.docker/config.json
-            DOCKER_CONFIG_DIR=$(mktemp -d)
-            export DOCKER_CONFIG="$DOCKER_CONFIG_DIR"
-
-            if [[ "$IMAGE" == *".amazonaws.com"* ]]; then
-              if [[ "$REG_USER" == "AWS" ]]; then
-                ECR_TOKEN="$REG_PASS"
-              else
-                ECR_TOKEN=$(AWS_ACCESS_KEY_ID="$REG_USER" AWS_SECRET_ACCESS_KEY="$REG_PASS" \
-                  aws ecr get-login-password --region "$REG_REGION")
-              fi
-              echo "$ECR_TOKEN" | docker login --username AWS --password-stdin \
-                "$(echo "$IMAGE" | cut -d'/' -f1)" 2>/dev/null
-            else
-              HOST=$(echo "$IMAGE" | cut -d'/' -f1)
-              if [[ "$HOST" != *.* && "$HOST" != *:* ]]; then HOST="docker.io"; fi
-              echo "$REG_PASS" | docker login --username "$REG_USER" --password-stdin "$HOST" 2>/dev/null
-            fi
-            docker pull "$IMAGE"
-
             DIGEST=$(docker inspect "$IMAGE" \
               | jq -r '.[0].RepoDigests[0]' \
               | cut -d'@' -f2)
-
-            rm -rf "$DOCKER_CONFIG_DIR"
           else
             # Default: skopeo queries the registry manifest directly — no credential storage
             command -v skopeo >/dev/null 2>&1 || sudo apt-get install -y -q skopeo
@@ -358,74 +397,12 @@ jobs:
           echo "Mediums=$MEDIUM_CVE" >> $GITHUB_OUTPUT
           echo "Grype analysis complete: $CRITICAL_CVE critical, $HIGH_CVE high, $MEDIUM_CVE medium vulnerabilities found."
 
-      - name: Determine Container Registry
-        id: registry
-        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' }}
-        run: |
-          HOST=$(echo "${{ inputs.IMAGE }}" | cut -d'/' -f1)
-          # Bare image names (e.g. "nginx:latest") have no dot or colon in the first segment
-          if [[ "$HOST" != *.* && "$HOST" != *:* ]]; then
-            TYPE="dockerhub"
-            HOST="docker.io"
-          elif [[ "$HOST" == *".amazonaws.com" ]]; then
-            TYPE="ecr"
-          elif [[ "$HOST" == *".azurecr.io" ]]; then
-            TYPE="acr"
-          elif [[ "$HOST" == "gcr.io" || "$HOST" == *".gcr.io" ]]; then
-            TYPE="gcr"
-          elif [[ "$HOST" == "ghcr.io" ]]; then
-            TYPE="ghcr"
-          elif [[ "$HOST" == "docker.io" ]]; then
-            TYPE="dockerhub"
-          else
-            TYPE="harbor"
-          fi
-          echo "type=$TYPE" >> $GITHUB_OUTPUT
-          echo "host=$HOST" >> $GITHUB_OUTPUT
-          echo "Registry type: $TYPE, host: $HOST"
-
-      - name: Login to Docker-Compatible Registry
-        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && contains(fromJSON('["dockerhub","ghcr","gcr","harbor"]'), steps.registry.outputs.type) }}
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ steps.registry.outputs.host }}
-          username: ${{ inputs.REGISTRY_USERNAME }}
-          password: ${{ secrets.REGISTRY_PASSWORD }}
-
-      - name: Configure AWS Credentials
-        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && steps.registry.outputs.type == 'ecr' && inputs.REGISTRY_USERNAME != 'AWS' }}
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          aws-access-key-id: ${{ inputs.REGISTRY_USERNAME }}
-          aws-secret-access-key: ${{ secrets.REGISTRY_PASSWORD }}
-          aws-region: ${{ inputs.REGISTRY_REGION }}
-
-      - name: Login to Amazon ECR
-        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && steps.registry.outputs.type == 'ecr' && inputs.REGISTRY_USERNAME != 'AWS' }}
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Login to Amazon ECR (pre-obtained token)
-        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME == 'AWS' && steps.registry.outputs.type == 'ecr' }}
-        env:
-          ECR_TOKEN: ${{ secrets.REGISTRY_PASSWORD }}
-          ECR_REGISTRY: ${{ steps.registry.outputs.host }}
-        run: echo "$ECR_TOKEN" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
-
-      - name: Login to Azure Container Registry
-        if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' && steps.registry.outputs.type == 'acr' }}
-        uses: azure/docker-login@v2
-        with:
-          login-server: ${{ steps.registry.outputs.host }}
-          username: ${{ inputs.REGISTRY_USERNAME }}
-          password: ${{ secrets.REGISTRY_PASSWORD }}
-
       - name: Extract Dockerfile from Image
         id: extract-dockerfile
         if: ${{ inputs.IMAGE != '' && inputs.dockerfile_path == '' }}
         run: |
           IMAGE="${{ inputs.IMAGE }}"
           DOCKERFILE_PATH="./extracted-dockerfile"
-          docker pull "$IMAGE"
           CONTAINER_ID=$(docker create "$IMAGE")
           FOUND=false
           for CANDIDATE in /Dockerfile /docker/Dockerfile /app/Dockerfile; do
@@ -495,7 +472,6 @@ jobs:
           # Docker (which handles this correctly) and retag it locally so Dockle
           # scans the local image without hitting the registry digest validation.
           if echo "$IMAGE" | grep -q '@sha256:'; then
-            docker pull "$IMAGE"
             docker tag "$IMAGE" dockle-scan-target:local
             echo "ref=dockle-scan-target:local" >> "$GITHUB_OUTPUT"
           else
