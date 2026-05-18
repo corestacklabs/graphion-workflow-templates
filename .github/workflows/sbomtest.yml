@@ -1,0 +1,192 @@
+name: Create, Scan, and Upload SBOM to CoreStack AppSecOps
+
+on:
+  workflow_call:
+    secrets:
+      REGISTRY_PASSWORD:
+        description: "Password or token for container registry (if using IMAGE input)"
+        required: false
+    inputs:
+      FILE:
+        description: 'Path to input file for SBOM generation (e.g. Dockerfile or binary) - mutually exclusive with IMAGE and PATH'
+        required: false
+        type: string
+      PATH:
+        description: 'Path to directory for SBOM generation'
+        required: false
+        type: string
+      IMAGE:
+        description: 'Container image reference (e.g. myregistry/myapp:1.0) for sbom generation - mutually exclusive with FILE and PATH. If the registry requires authentication, provide credentials via REGISTRY_USERNAME and REGISTRY_PASSWORD inputs.'
+        required: false
+        type: string
+      REGISTRY_USERNAME:
+        description: 'User name for container registry (if using IMAGE input)'
+        type: string
+        required: false
+      REGISTRY_REGION:
+        description: 'Region for container registry  (if using IMAGE input and REGISTRY is ECR)'
+        type: string
+        required: false
+      project_name:
+        description: 'AppSecOps project name (e.g. Payment Service) - used to resolve project_id'
+        type: string
+        required: false
+jobs:
+  create-sbom-and-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate inputs
+        shell: bash
+        run: |
+          if [[ -z "${{ inputs.project_name }}" ]]; then
+            echo "Error: 'project_name' is required."
+            exit 1
+          fi
+          if [[ -z "${{ inputs.FILE }}" && -z "${{ inputs.PATH }}" && -z "${{ inputs.IMAGE }}" ]]; then
+            echo "Error: Either FILE, PATH, OR IMAGE is required."
+            exit 1
+          fi
+          if [[ -n "${{ inputs.IMAGE }}" && -z "${{ inputs.REGISTRY_USERNAME }}" ]]; then
+            echo "Error: REGISTRY_USERNAME is required for image scans."
+            exit 1
+          fi
+          if [[ -n "${{ inputs.IMAGE }}" && -z "${{ secrets.REGISTRY_PASSWORD }}" ]]; then
+            echo "Error: REGISTRY_PASSWORD is required for image scans."
+            exit 1
+          fi
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Create Syft config
+        run: |
+          cat > .syft.yaml << 'EOF'
+          file:
+            metadata:
+              digests:
+                - sha256
+          EOF
+
+        # Syft uses go-containerregistry to login to any registry with registry-username and registry-password
+        # ACR, ECR, GCR, Harbor, GHCR
+      - name: Create SBOM With Syft Image Scan
+        if: ${{ inputs.IMAGE != '' }}
+        uses: anchore/sbom-action@v0
+        with:
+         image: ${{ inputs.IMAGE }}
+         registry-username: ${{ inputs.REGISTRY_USERNAME }}
+         registry-password: ${{ secrets.REGISTRY_PASSWORD }}
+         format: cyclonedx-json
+         output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
+         config: .syft.yaml
+
+      - name: Create SBOM With Syft File Scan
+        if: ${{ inputs.FILE != '' }}
+        uses: anchore/sbom-action@v0
+        with:
+         file: ${{ inputs.FILE }}
+         format: cyclonedx-json
+         output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
+         config: .syft.yaml
+
+      - name: Create SBOM With Syft Path Scan
+        if: ${{ inputs.PATH != '' }}
+        uses: anchore/sbom-action@v0
+        with:
+         path: ${{ inputs.PATH }}
+         format: cyclonedx-json
+         output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
+         config: .syft.yaml
+
+      - name: Run Grype Scan
+        if: ${{ inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '' }}
+        run: |
+            curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+            grype sbom:"${{ github.event.repository.name }}-sbom.cdx.json" -o cyclonedx-json > ${{ github.event.repository.name }}-sbom.json
+
+      - name: Add SHA-256 image digest to SBOM
+        if: ${{ inputs.IMAGE != '' }}
+        env:
+          REG_USER: ${{ inputs.REGISTRY_USERNAME }}
+          REG_PASS: ${{ secrets.REGISTRY_PASSWORD }}
+          REG_REGION: ${{ inputs.REGISTRY_REGION }}
+          IMAGE: ${{ inputs.IMAGE }}
+        run: |
+          SBOM_FILE="${{ github.event.repository.name }}-sbom.json"
+          OUT_FILE="${SBOM_FILE%.json}-CycloneDX-sha256.json"
+
+          # Authenticate to registry and pull image into the local docker daemon
+          if [[ "$IMAGE" == *".amazonaws.com"* ]]; then
+            if [[ "$REG_USER" == "AWS" ]]; then
+              ECR_TOKEN="$REG_PASS"
+            else
+              ECR_TOKEN=$(AWS_ACCESS_KEY_ID="$REG_USER" AWS_SECRET_ACCESS_KEY="$REG_PASS" \
+                aws ecr get-login-password --region "$REG_REGION")
+            fi
+            echo "$ECR_TOKEN" | docker login --username AWS --password-stdin \
+              "$(echo "$IMAGE" | cut -d'/' -f1)"
+          else
+            HOST=$(echo "$IMAGE" | cut -d'/' -f1)
+            if [[ "$HOST" != *.* && "$HOST" != *:* ]]; then HOST="docker.io"; fi
+            echo "$REG_PASS" | docker login --username "$REG_USER" --password-stdin "$HOST"
+          fi
+          docker pull "$IMAGE"
+
+          DIGEST=$(docker inspect "$IMAGE" \
+            | jq -r '.[0].RepoDigests[0]' \
+            | cut -d'@' -f2)
+
+          if [ -z "$DIGEST" ] || [ "$DIGEST" = "null" ]; then
+            echo "ERROR: RepoDigest not found"
+            exit 1
+          fi
+
+          echo "::notice::Image RepoDigest (SHA-256): $DIGEST"
+
+          jq --arg digest "$DIGEST" '
+            .metadata.component.hashes //= [] |
+            if (.metadata.component.hashes | map(select(.alg == "SHA-256" and .content == $digest)) | length) == 0
+            then .metadata.component.hashes += [{"alg": "SHA-256", "content": $digest}]
+            else .
+            end
+          ' "$SBOM_FILE" > "$OUT_FILE"
+
+          cp "$OUT_FILE" "$SBOM_FILE"
+          echo "SHA-256 digest added to SBOM. Output: $OUT_FILE"
+
+      - name: Upload Grype Artifact
+        if: ${{ inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '' }}
+        uses: actions/upload-artifact@v6
+        with:
+            name: grype-output-cdx-${{ inputs.project_name }}
+            path: ${{ github.event.repository.name }}-sbom.json
+
+      - name: Grype Analysis
+        id: grype-analysis
+        if: ${{ inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '' }}
+        run: |
+          set +e
+          CRITICAL_CVE=$(cat ${{ github.event.repository.name }}-sbom.json | jq '[.vulnerabilities[]? | select(.ratings[].severity == "critical")] |length')
+          HIGH_CVE=$(cat ${{ github.event.repository.name }}-sbom.json | jq '[.vulnerabilities[]? | select(.ratings[].severity == "high")] |length')
+          MEDIUM_CVE=$(cat ${{ github.event.repository.name }}-sbom.json | jq '[.vulnerabilities[]? | select(.ratings[].severity == "medium")] |length')
+          set -e
+          echo "Criticals=$CRITICAL_CVE" >> $GITHUB_OUTPUT
+          echo "Highs=$HIGH_CVE" >> $GITHUB_OUTPUT
+          echo "Mediums=$MEDIUM_CVE" >> $GITHUB_OUTPUT
+          echo "Grype analysis complete: $CRITICAL_CVE critical, $HIGH_CVE high, $MEDIUM_CVE medium vulnerabilities found."
+
+      - name: Generate Summary
+        run: |
+          {
+            echo "## SBOM Creation and Scan complete"
+            echo "- **SBOM Artifact:** ${{ github.event.repository.name }}-sbom.json"
+            if [ "${{ inputs.IMAGE }}" != '' ] || [ "${{ inputs.FILE }}" != '' ] || [ "${{ inputs.PATH }}" != '' ]; then
+              echo ""
+              echo "### 🔍 Grype Scan Summary"
+              echo "| Severity | Count |"
+              echo "|---|---|"
+              echo "| Critical | ${{ steps.grype-analysis.outputs.Criticals }} |"
+              echo "| High | ${{ steps.grype-analysis.outputs.Highs }} |"
+              echo "| Medium | ${{ steps.grype-analysis.outputs.Mediums }} |"
+            fi
+          } >> $GITHUB_STEP_SUMMARY
