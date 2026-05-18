@@ -273,6 +273,9 @@ jobs:
             exit 1
           fi
 
+          # Strip algorithm prefix — CoreStack validates content as bare hex only
+          DIGEST="${DIGEST#sha256:}"
+
           echo "::notice::Image RepoDigest (SHA-256): $DIGEST"
 
           jq --arg digest "$DIGEST" '
