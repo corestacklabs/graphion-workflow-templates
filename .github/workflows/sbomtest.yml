@@ -89,6 +89,10 @@ jobs:
           SBOM_FILE="${{ github.event.repository.name }}-sbom.json"
           OUT_FILE="${SBOM_FILE%.json}-CycloneDX-sha256.json"
 
+          # Use a temp Docker config dir so credentials aren't written to ~/.docker/config.json
+          DOCKER_CONFIG_DIR=$(mktemp -d)
+          export DOCKER_CONFIG="$DOCKER_CONFIG_DIR"
+
           # Authenticate to registry and pull image into the local docker daemon
           if [[ "$IMAGE" == *".amazonaws.com"* ]]; then
             if [[ "$REG_USER" == "AWS" ]]; then
@@ -98,11 +102,11 @@ jobs:
                 aws ecr get-login-password --region "$REG_REGION")
             fi
             echo "$ECR_TOKEN" | docker login --username AWS --password-stdin \
-              "$(echo "$IMAGE" | cut -d'/' -f1)"
+              "$(echo "$IMAGE" | cut -d'/' -f1)" 2>/dev/null
           else
             HOST=$(echo "$IMAGE" | cut -d'/' -f1)
             if [[ "$HOST" != *.* && "$HOST" != *:* ]]; then HOST="docker.io"; fi
-            echo "$REG_PASS" | docker login --username "$REG_USER" --password-stdin "$HOST"
+            echo "$REG_PASS" | docker login --username "$REG_USER" --password-stdin "$HOST" 2>/dev/null
           fi
           docker pull "$IMAGE"
 
@@ -126,6 +130,7 @@ jobs:
           ' "$SBOM_FILE" > "$OUT_FILE"
 
           cp "$OUT_FILE" "$SBOM_FILE"
+          rm -rf "$DOCKER_CONFIG_DIR"
           echo "SHA-256 digest added to SBOM. Output: $OUT_FILE"
 
       - name: Upload Grype Artifact
