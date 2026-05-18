@@ -27,6 +27,11 @@ on:
         description: 'Region for container registry  (if using IMAGE input and REGISTRY is ECR)'
         type: string
         required: false
+      digest_tool:
+        description: 'Tool used to retrieve the image RepoDigest SHA-256. Use "skopeo" (default, no credential storage) or "docker" (docker login + pull + inspect).'
+        type: string
+        required: false
+        default: 'skopeo'
 jobs:
   create-sbom-and-scan:
     runs-on: ubuntu-latest
@@ -88,31 +93,52 @@ jobs:
         run: |
           SBOM_FILE="${{ github.event.repository.name }}-sbom.json"
           OUT_FILE="${SBOM_FILE%.json}-CycloneDX-sha256.json"
+          DIGEST_TOOL="${{ inputs.digest_tool }}"
 
-          # Use a temp Docker config dir so credentials aren't written to ~/.docker/config.json
-          DOCKER_CONFIG_DIR=$(mktemp -d)
-          export DOCKER_CONFIG="$DOCKER_CONFIG_DIR"
+          if [ "$DIGEST_TOOL" = "docker" ]; then
+            # Use a temp Docker config dir so credentials aren't written to ~/.docker/config.json
+            DOCKER_CONFIG_DIR=$(mktemp -d)
+            export DOCKER_CONFIG="$DOCKER_CONFIG_DIR"
 
-          # Authenticate to registry and pull image into the local docker daemon
-          if [[ "$IMAGE" == *".amazonaws.com"* ]]; then
-            if [[ "$REG_USER" == "AWS" ]]; then
-              ECR_TOKEN="$REG_PASS"
+            if [[ "$IMAGE" == *".amazonaws.com"* ]]; then
+              if [[ "$REG_USER" == "AWS" ]]; then
+                ECR_TOKEN="$REG_PASS"
+              else
+                ECR_TOKEN=$(AWS_ACCESS_KEY_ID="$REG_USER" AWS_SECRET_ACCESS_KEY="$REG_PASS" \
+                  aws ecr get-login-password --region "$REG_REGION")
+              fi
+              echo "$ECR_TOKEN" | docker login --username AWS --password-stdin \
+                "$(echo "$IMAGE" | cut -d'/' -f1)" 2>/dev/null
             else
-              ECR_TOKEN=$(AWS_ACCESS_KEY_ID="$REG_USER" AWS_SECRET_ACCESS_KEY="$REG_PASS" \
-                aws ecr get-login-password --region "$REG_REGION")
+              HOST=$(echo "$IMAGE" | cut -d'/' -f1)
+              if [[ "$HOST" != *.* && "$HOST" != *:* ]]; then HOST="docker.io"; fi
+              echo "$REG_PASS" | docker login --username "$REG_USER" --password-stdin "$HOST" 2>/dev/null
             fi
-            echo "$ECR_TOKEN" | docker login --username AWS --password-stdin \
-              "$(echo "$IMAGE" | cut -d'/' -f1)" 2>/dev/null
-          else
-            HOST=$(echo "$IMAGE" | cut -d'/' -f1)
-            if [[ "$HOST" != *.* && "$HOST" != *:* ]]; then HOST="docker.io"; fi
-            echo "$REG_PASS" | docker login --username "$REG_USER" --password-stdin "$HOST" 2>/dev/null
-          fi
-          docker pull "$IMAGE"
+            docker pull "$IMAGE"
 
-          DIGEST=$(docker inspect "$IMAGE" \
-            | jq -r '.[0].RepoDigests[0]' \
-            | cut -d'@' -f2)
+            DIGEST=$(docker inspect "$IMAGE" \
+              | jq -r '.[0].RepoDigests[0]' \
+              | cut -d'@' -f2)
+
+            rm -rf "$DOCKER_CONFIG_DIR"
+          else
+            # Default: skopeo queries the registry manifest directly — no credential storage
+            command -v skopeo >/dev/null 2>&1 || sudo apt-get install -y -q skopeo
+
+            if [[ "$IMAGE" == *".amazonaws.com"* ]]; then
+              if [[ "$REG_USER" == "AWS" ]]; then
+                ECR_TOKEN="$REG_PASS"
+              else
+                ECR_TOKEN=$(AWS_ACCESS_KEY_ID="$REG_USER" AWS_SECRET_ACCESS_KEY="$REG_PASS" \
+                  aws ecr get-login-password --region "$REG_REGION")
+              fi
+              DIGEST=$(skopeo inspect --username "AWS" --password "$ECR_TOKEN" \
+                docker://"$IMAGE" | jq -r '.Digest')
+            else
+              DIGEST=$(skopeo inspect --username "$REG_USER" --password "$REG_PASS" \
+                docker://"$IMAGE" | jq -r '.Digest')
+            fi
+          fi
 
           if [ -z "$DIGEST" ] || [ "$DIGEST" = "null" ]; then
             echo "ERROR: RepoDigest not found"
@@ -130,7 +156,6 @@ jobs:
           ' "$SBOM_FILE" > "$OUT_FILE"
 
           cp "$OUT_FILE" "$SBOM_FILE"
-          rm -rf "$DOCKER_CONFIG_DIR"
           echo "SHA-256 digest added to SBOM. Output: $OUT_FILE"
 
       - name: Upload Grype Artifact
