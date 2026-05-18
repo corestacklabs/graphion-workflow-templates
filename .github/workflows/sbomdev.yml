@@ -239,16 +239,16 @@ jobs:
         if: ${{ inputs.IMAGE != '' }}
         run: |
           docker pull "${{ inputs.IMAGE }}"
-          docker tag "${{ inputs.IMAGE }}" sbom-scan-target:local
+          docker save "${{ inputs.IMAGE }}" -o /tmp/sbom-image.tar
 
       - name: Create SBOM With Syft Image Scan
         if: ${{ inputs.IMAGE != '' }}
-        uses: anchore/sbom-action@v0
-        with:
-         image: docker-daemon:sbom-scan-target:local
-         format: cyclonedx-json
-         output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
-         config: .syft.yaml
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          syft scan docker-archive:/tmp/sbom-image.tar \
+            --config .syft.yaml \
+            -o cyclonedx-json \
+            --file "${{ github.event.repository.name }}-sbom.cdx.json"
 
       - name: Create SBOM With Syft File Scan
         if: ${{ inputs.FILE != '' }}
