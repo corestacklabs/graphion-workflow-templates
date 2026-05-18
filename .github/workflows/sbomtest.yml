@@ -132,7 +132,7 @@ jobs:
         if: ${{ inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '' }}
         uses: actions/upload-artifact@v6
         with:
-            name: grype-output-cdx-${{ inputs.project_name }}
+            name: grype-output-cdx
             path: ${{ github.event.repository.name }}-sbom.json
 
       - name: Grype Analysis
