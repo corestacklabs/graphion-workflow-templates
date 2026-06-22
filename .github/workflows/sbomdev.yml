@@ -174,6 +174,48 @@ jobs:
                 - sha256
           EOF
 
+      - name: Create Grype config
+        run: |
+          cat > .grype.yaml << 'EOF'
+          vulnerability:
+            severity-source: nvd
+          ignore: []
+          search:
+            scope: all-layers
+            unindexed-archives: true
+          EOF
+
+      - name: Cache Hadolint
+        if: ${{ inputs.IMAGE != '' }}
+        id: cache-hadolint
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/hadolint
+          key: hadolint-${{ runner.os }}-v2.12.0
+
+      - name: Install Hadolint
+        if: ${{ inputs.IMAGE != '' && steps.cache-hadolint.outputs.cache-hit != 'true' }}
+        run: |
+          curl -sSL "https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64" \
+            -o /usr/local/bin/hadolint
+          chmod +x /usr/local/bin/hadolint
+
+      - name: Cache Grype
+        if: ${{ inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '' }}
+        id: cache-grype
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/grype
+          key: grype-${{ runner.os }}-v0.88.0
+
+      - name: Install Grype
+        if: ${{ (inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '') && steps.cache-grype.outputs.cache-hit != 'true' }}
+        run: curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin v0.88.0
+
+      - name: Ensure skopeo is available
+        if: ${{ inputs.IMAGE != '' && inputs.digest_tool != 'docker' }}
+        run: command -v skopeo >/dev/null 2>&1 || sudo apt-get install -y -q skopeo
+
       - name: Determine Container Registry
         id: registry
         if: ${{ inputs.IMAGE != '' && inputs.REGISTRY_USERNAME != '' }}
@@ -268,11 +310,126 @@ jobs:
          output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
          config: .syft.yaml
          
-      - name: Run Grype Scan
+      - name: Start Grype Scan
         if: ${{ inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '' }}
         run: |
-            curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
-            grype sbom:"${{ github.event.repository.name }}-sbom.cdx.json" -o cyclonedx-json > ${{ github.event.repository.name }}-sbom.json
+          (grype sbom:"${{ github.event.repository.name }}-sbom.cdx.json" \
+            --config .grype.yaml \
+            -o cyclonedx-json \
+            > "${{ github.event.repository.name }}-sbom.json"; echo $? > /tmp/grype.exit) &
+          echo $! > /tmp/grype.pid
+          echo "Grype scan started in background (PID $(cat /tmp/grype.pid))."
+
+      - name: Extract Dockerfile from Image
+        id: extract-dockerfile
+        if: ${{ inputs.IMAGE != '' && inputs.dockerfile_path == '' }}
+        run: |
+          IMAGE="${{ inputs.IMAGE }}"
+          DOCKERFILE_PATH="./extracted-dockerfile"
+          CONTAINER_ID=$(docker create "$IMAGE")
+          FOUND=false
+          for CANDIDATE in /Dockerfile /docker/Dockerfile /app/Dockerfile; do
+            if docker cp "${CONTAINER_ID}:${CANDIDATE}" "$DOCKERFILE_PATH" 2>/dev/null; then
+              echo "Extracted Dockerfile from image at ${CANDIDATE}."
+              FOUND=true
+              break
+            fi
+          done
+          docker rm "$CONTAINER_ID" > /dev/null
+          if [ "$FOUND" = "false" ]; then
+            echo "No Dockerfile found inside image; reconstructing from docker history..."
+            docker history --no-trunc --format "{{.CreatedBy}}" "$IMAGE" \
+              | tac \
+              | sed -E \
+                  -e '/^$/d' \
+                  -e 's/^\|[0-9]+ .+\/bin\/sh/\/bin\/sh/' \
+                  -e 's|^/bin/sh -c #\(nop\) +||' \
+                  -e 's|^/bin/sh -c |RUN |' \
+                  -e 's/ #.*$//' \
+              | grep -E '^(FROM|RUN|CMD|LABEL|EXPOSE|ENV|ADD|COPY|ENTRYPOINT|VOLUME|USER|WORKDIR|ARG|ONBUILD|STOPSIGNAL|HEALTHCHECK|SHELL|MAINTAINER)( |\[|$)' \
+              | grep -vE '^(COPY|ADD) file:' \
+              > "$DOCKERFILE_PATH"
+            # hadolint requires FROM as the first instruction; prepend a placeholder if history didn't include one
+            if ! grep -q '^FROM ' "$DOCKERFILE_PATH"; then
+              echo 'FROM scratch' | cat - "$DOCKERFILE_PATH" > /tmp/df_tmp && mv /tmp/df_tmp "$DOCKERFILE_PATH"
+            fi
+            if [ ! -s "$DOCKERFILE_PATH" ]; then
+              echo "::warning::Could not reconstruct Dockerfile from history; skipping hadolint."
+              echo "dockerfile_path=" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            echo "Reconstructed Dockerfile from image history."
+          fi
+          echo "dockerfile_path=$DOCKERFILE_PATH" >> $GITHUB_OUTPUT
+
+      - name: Lint Dockerfile with Hadolint
+        id: hadolint
+        if: ${{ inputs.IMAGE != '' && (inputs.dockerfile_path != '' || steps.extract-dockerfile.outputs.dockerfile_path != '') }}
+        env:
+          USER_DOCKERFILE: ${{ inputs.dockerfile_path }}
+          EXTRACTED_DOCKERFILE: ${{ steps.extract-dockerfile.outputs.dockerfile_path }}
+        run: |
+          DOCKERFILE="${USER_DOCKERFILE:-$EXTRACTED_DOCKERFILE}"
+          hadolint --format json "$DOCKERFILE" \
+            > "${{ github.event.repository.name }}-hadolint.json" || true
+
+      - name: Upload Hadolint Artifact
+        if: ${{ inputs.IMAGE != '' && (inputs.dockerfile_path != '' || steps.extract-dockerfile.outputs.dockerfile_path != '') }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: hadolint-json-report-${{ inputs.project_name }}
+          path: ${{ github.event.repository.name }}-hadolint.json
+
+      - name: Prepare image reference for Dockle
+        id: dockle-ref
+        if: ${{ inputs.IMAGE != '' }}
+        env:
+          IMAGE: ${{ inputs.IMAGE }}
+        run: |
+          # Dockle fails with digest references (@sha256:...) because it re-fetches
+          # the manifest and validates the digest, which fails when ACR returns a
+          # manifest list for an inner platform manifest digest. Pull the image with
+          # Docker (which handles this correctly) and retag it locally so Dockle
+          # scans the local image without hitting the registry digest validation.
+          if echo "$IMAGE" | grep -q '@sha256:'; then
+            docker tag "$IMAGE" dockle-scan-target:local
+            echo "ref=dockle-scan-target:local" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=$IMAGE" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run Dockle scan and generate JSON report
+        if: ${{ inputs.IMAGE != '' }}
+        uses: erzz/dockle-action@v1
+        with:
+          image: ${{ steps.dockle-ref.outputs.ref }}
+          report-format: json
+          report-name: ${{ github.event.repository.name }}-dockle
+          exit-code: 0
+
+      - name: Upload Dockle Artifact
+        if: ${{ inputs.IMAGE != '' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: dockle-report-${{ inputs.project_name }}
+          path: ${{ github.event.repository.name }}-dockle.json
+
+      - name: Wait for Grype scan
+        if: ${{ inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '' }}
+        run: |
+          GRYPE_PID=$(cat /tmp/grype.pid 2>/dev/null || echo "")
+          if [ -n "$GRYPE_PID" ] && kill -0 "$GRYPE_PID" 2>/dev/null; then
+            echo "Waiting for Grype scan (PID $GRYPE_PID)..."
+            while kill -0 "$GRYPE_PID" 2>/dev/null; do
+              sleep 2
+            done
+          fi
+          EXIT_CODE=$(cat /tmp/grype.exit 2>/dev/null || echo "1")
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "::error::Grype scan failed with exit code $EXIT_CODE"
+            exit 1
+          fi
+          echo "Grype scan complete."
 
       - name: Add SHA-256 image digest to SBOM
         if: ${{ inputs.IMAGE != '' }}
@@ -292,8 +449,6 @@ jobs:
               | cut -d'@' -f2)
           else
             # Default: skopeo queries the registry manifest directly — no credential storage
-            command -v skopeo >/dev/null 2>&1 || sudo apt-get install -y -q skopeo
-
             if [[ "$IMAGE" == *".amazonaws.com"* ]]; then
               if [[ "$REG_USER" == "AWS" ]]; then
                 ECR_TOKEN="$REG_PASS"
@@ -398,103 +553,6 @@ jobs:
           echo "Highs=$HIGH_CVE" >> $GITHUB_OUTPUT
           echo "Mediums=$MEDIUM_CVE" >> $GITHUB_OUTPUT
           echo "Grype analysis complete: $CRITICAL_CVE critical, $HIGH_CVE high, $MEDIUM_CVE medium vulnerabilities found."
-
-      - name: Extract Dockerfile from Image
-        id: extract-dockerfile
-        if: ${{ inputs.IMAGE != '' && inputs.dockerfile_path == '' }}
-        run: |
-          IMAGE="${{ inputs.IMAGE }}"
-          DOCKERFILE_PATH="./extracted-dockerfile"
-          CONTAINER_ID=$(docker create "$IMAGE")
-          FOUND=false
-          for CANDIDATE in /Dockerfile /docker/Dockerfile /app/Dockerfile; do
-            if docker cp "${CONTAINER_ID}:${CANDIDATE}" "$DOCKERFILE_PATH" 2>/dev/null; then
-              echo "Extracted Dockerfile from image at ${CANDIDATE}."
-              FOUND=true
-              break
-            fi
-          done
-          docker rm "$CONTAINER_ID" > /dev/null
-          if [ "$FOUND" = "false" ]; then
-            echo "No Dockerfile found inside image; reconstructing from docker history..."
-            docker history --no-trunc --format "{{.CreatedBy}}" "$IMAGE" \
-              | tac \
-              | sed -E \
-                  -e '/^$/d' \
-                  -e 's/^\|[0-9]+ .+\/bin\/sh/\/bin\/sh/' \
-                  -e 's|^/bin/sh -c #\(nop\) +||' \
-                  -e 's|^/bin/sh -c |RUN |' \
-                  -e 's/ #.*$//' \
-              | grep -E '^(FROM|RUN|CMD|LABEL|EXPOSE|ENV|ADD|COPY|ENTRYPOINT|VOLUME|USER|WORKDIR|ARG|ONBUILD|STOPSIGNAL|HEALTHCHECK|SHELL|MAINTAINER)( |\[|$)' \
-              | grep -vE '^(COPY|ADD) file:' \
-              > "$DOCKERFILE_PATH"
-            # hadolint requires FROM as the first instruction; prepend a placeholder if history didn't include one
-            if ! grep -q '^FROM ' "$DOCKERFILE_PATH"; then
-              echo 'FROM scratch' | cat - "$DOCKERFILE_PATH" > /tmp/df_tmp && mv /tmp/df_tmp "$DOCKERFILE_PATH"
-            fi
-            if [ ! -s "$DOCKERFILE_PATH" ]; then
-              echo "::warning::Could not reconstruct Dockerfile from history; skipping hadolint."
-              echo "dockerfile_path=" >> $GITHUB_OUTPUT
-              exit 0
-            fi
-            echo "Reconstructed Dockerfile from image history."
-          fi
-          echo "dockerfile_path=$DOCKERFILE_PATH" >> $GITHUB_OUTPUT
-
-      - name: Lint Dockerfile with Hadolint
-        id: hadolint
-        if: ${{ inputs.IMAGE != '' && (inputs.dockerfile_path != '' || steps.extract-dockerfile.outputs.dockerfile_path != '') }}
-        env:
-          USER_DOCKERFILE: ${{ inputs.dockerfile_path }}
-          EXTRACTED_DOCKERFILE: ${{ steps.extract-dockerfile.outputs.dockerfile_path }}
-        run: |
-          DOCKERFILE="${USER_DOCKERFILE:-$EXTRACTED_DOCKERFILE}"
-          curl -sSL "https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64" \
-            -o /usr/local/bin/hadolint
-          chmod +x /usr/local/bin/hadolint
-          hadolint --format json "$DOCKERFILE" \
-            > "${{ github.event.repository.name }}-hadolint.json" || true
-
-      - name: Upload Hadolint Artifact
-        if: ${{ inputs.IMAGE != '' && (inputs.dockerfile_path != '' || steps.extract-dockerfile.outputs.dockerfile_path != '') }}
-        uses: actions/upload-artifact@v6
-        with:
-          name: hadolint-json-report-${{ inputs.project_name }}
-          path: ${{ github.event.repository.name }}-hadolint.json
-
-      - name: Prepare image reference for Dockle
-        id: dockle-ref
-        if: ${{ inputs.IMAGE != '' }}
-        env:
-          IMAGE: ${{ inputs.IMAGE }}
-        run: |
-          # Dockle fails with digest references (@sha256:...) because it re-fetches
-          # the manifest and validates the digest, which fails when ACR returns a
-          # manifest list for an inner platform manifest digest. Pull the image with
-          # Docker (which handles this correctly) and retag it locally so Dockle
-          # scans the local image without hitting the registry digest validation.
-          if echo "$IMAGE" | grep -q '@sha256:'; then
-            docker tag "$IMAGE" dockle-scan-target:local
-            echo "ref=dockle-scan-target:local" >> "$GITHUB_OUTPUT"
-          else
-            echo "ref=$IMAGE" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Run Dockle scan and generate JSON report
-        if: ${{ inputs.IMAGE != '' }}
-        uses: erzz/dockle-action@v1
-        with:
-          image: ${{ steps.dockle-ref.outputs.ref }}
-          report-format: json
-          report-name: ${{ github.event.repository.name }}-dockle
-          exit-code: 0
-
-      - name: Upload Dockle Artifact
-        if: ${{ inputs.IMAGE != '' }}
-        uses: actions/upload-artifact@v6
-        with:
-          name: dockle-report-${{ inputs.project_name }}
-          path: ${{ github.event.repository.name }}-dockle.json
 
       - name: Generate Summary
         run: |
