@@ -195,11 +195,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /usr/local/bin/grype
-          key: grype-${{ runner.os }}-v0.88.0
+          key: grype-${{ runner.os }}-v0.115.0
 
       - name: Install Grype
         if: ${{ (inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '') && steps.cache-grype.outputs.cache-hit != 'true' }}
-        run: curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin v0.88.0
+        run: curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin v0.115.0
 
       - name: Ensure skopeo is available
         if: ${{ inputs.IMAGE != '' && inputs.digest_tool != 'docker' }}
@@ -303,7 +303,7 @@ jobs:
         if: ${{ inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '' }}
         run: |
           (grype sbom:"${{ github.event.repository.name }}-sbom.cdx.json" -o cyclonedx-json \
-            > "${{ github.event.repository.name }}-sbom.json"; echo $? > /tmp/grype.exit) &
+            > "${{ github.event.repository.name }}-sbom.json" 2> /tmp/grype.err; echo $? > /tmp/grype.exit) &
           echo $! > /tmp/grype.pid
           echo "Grype scan started in background (PID $(cat /tmp/grype.pid))."
 
@@ -414,6 +414,9 @@ jobs:
           EXIT_CODE=$(cat /tmp/grype.exit 2>/dev/null || echo "1")
           if [ "$EXIT_CODE" != "0" ]; then
             echo "::error::Grype scan failed with exit code $EXIT_CODE"
+            echo "----- grype stderr -----"
+            cat /tmp/grype.err 2>/dev/null || echo "(no stderr captured)"
+            echo "------------------------"
             exit 1
           fi
           echo "Grype scan complete."
