@@ -174,17 +174,6 @@ jobs:
                 - sha256
           EOF
 
-      - name: Create Grype config
-        run: |
-          cat > .grype.yaml << 'EOF'
-          vulnerability:
-            severity-source: nvd
-          ignore: []
-          search:
-            scope: all-layers
-            unindexed-archives: true
-          EOF
-
       - name: Cache Hadolint
         if: ${{ inputs.IMAGE != '' }}
         id: cache-hadolint
@@ -313,9 +302,7 @@ jobs:
       - name: Start Grype Scan
         if: ${{ inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '' }}
         run: |
-          (grype sbom:"${{ github.event.repository.name }}-sbom.cdx.json" \
-            --config .grype.yaml \
-            -o cyclonedx-json \
+          (grype sbom:"${{ github.event.repository.name }}-sbom.cdx.json" -o cyclonedx-json \
             > "${{ github.event.repository.name }}-sbom.json"; echo $? > /tmp/grype.exit) &
           echo $! > /tmp/grype.pid
           echo "Grype scan started in background (PID $(cat /tmp/grype.pid))."
