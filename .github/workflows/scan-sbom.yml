@@ -16,13 +16,24 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: sbom-cdx-${{ inputs.project_name }}
+          path: sbom-input
 
-      - name: Validate SBOM file exists
+      - name: Locate SBOM file
         run: |
-          if [ ! -f "${{ github.event.repository.name }}-sbom.cdx.json" ]; then
-            echo "::error::SBOM artifact 'sbom-cdx-${{ inputs.project_name }}' did not contain ${{ github.event.repository.name }}-sbom.cdx.json"
+          # The artifact's internal filename only matches our convention when
+          # create-sbom.yml produced it. A customer-supplied SBOM can be named
+          # anything, so just require the artifact to contain exactly one file
+          # and use whatever it's called.
+          FILES=(sbom-input/*)
+          if [ "${#FILES[@]}" -eq 0 ]; then
+            echo "::error::SBOM artifact 'sbom-cdx-${{ inputs.project_name }}' is empty."
             exit 1
           fi
+          if [ "${#FILES[@]}" -gt 1 ]; then
+            echo "::error::SBOM artifact 'sbom-cdx-${{ inputs.project_name }}' must contain exactly one file, found ${#FILES[@]}: ${FILES[*]}"
+            exit 1
+          fi
+          cp "${FILES[0]}" "${{ github.event.repository.name }}-sbom.cdx.json"
 
       - name: Cache Grype
         id: cache-grype
