@@ -272,41 +272,6 @@ jobs:
           docker pull "${{ inputs.IMAGE }}"
           docker save "${{ inputs.IMAGE }}" -o /tmp/sbom-image.tar
 
-      - name: Create SBOM With Syft Image Scan
-        if: ${{ inputs.IMAGE != '' }}
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
-          syft scan docker-archive:/tmp/sbom-image.tar \
-            --config .syft.yaml \
-            -o cyclonedx-json \
-            --file "${{ github.event.repository.name }}-sbom.cdx.json"
-
-      - name: Create SBOM With Syft File Scan
-        if: ${{ inputs.FILE != '' }}
-        uses: anchore/sbom-action@v0
-        with:
-         file: ${{ inputs.FILE }}
-         format: cyclonedx-json
-         output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
-         config: .syft.yaml
-
-      - name: Create SBOM With Syft Path Scan
-        if: ${{ inputs.PATH != '' }}
-        uses: anchore/sbom-action@v0
-        with:
-         path: ${{ inputs.PATH }}
-         format: cyclonedx-json
-         output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
-         config: .syft.yaml
-         
-      - name: Start Grype Scan
-        if: ${{ inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '' }}
-        run: |
-          (grype sbom:"${{ github.event.repository.name }}-sbom.cdx.json" -o cyclonedx-json \
-            > "${{ github.event.repository.name }}-sbom.json" 2> /tmp/grype.err; echo $? > /tmp/grype.exit) &
-          echo $! > /tmp/grype.pid
-          echo "Grype scan started in background (PID $(cat /tmp/grype.pid))."
-
       - name: Extract Dockerfile from Image
         id: extract-dockerfile
         if: ${{ inputs.IMAGE != '' && inputs.dockerfile_path == '' }}
@@ -348,6 +313,50 @@ jobs:
             echo "Reconstructed Dockerfile from image history."
           fi
           echo "dockerfile_path=$DOCKERFILE_PATH" >> $GITHUB_OUTPUT
+
+      - name: Free image from Docker daemon
+        if: ${{ inputs.IMAGE != '' && inputs.digest_tool != 'docker' }}
+        run: |
+          # The tar from the Pull step already has everything Syft/Grype/Dockle need.
+          # Drop the daemon's copy now (after Dockerfile extraction) to cap peak disk
+          # usage — skipped when digest_tool=docker since that path still needs
+          # `docker inspect` against the local image later.
+          docker rmi "${{ inputs.IMAGE }}" || true
+
+      - name: Create SBOM With Syft Image Scan
+        if: ${{ inputs.IMAGE != '' }}
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          syft scan docker-archive:/tmp/sbom-image.tar \
+            --config .syft.yaml \
+            -o cyclonedx-json \
+            --file "${{ github.event.repository.name }}-sbom.cdx.json"
+
+      - name: Create SBOM With Syft File Scan
+        if: ${{ inputs.FILE != '' }}
+        uses: anchore/sbom-action@v0
+        with:
+         file: ${{ inputs.FILE }}
+         format: cyclonedx-json
+         output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
+         config: .syft.yaml
+
+      - name: Create SBOM With Syft Path Scan
+        if: ${{ inputs.PATH != '' }}
+        uses: anchore/sbom-action@v0
+        with:
+         path: ${{ inputs.PATH }}
+         format: cyclonedx-json
+         output-file: "${{ github.event.repository.name }}-sbom.cdx.json"
+         config: .syft.yaml
+         
+      - name: Start Grype Scan
+        if: ${{ inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '' }}
+        run: |
+          (grype sbom:"${{ github.event.repository.name }}-sbom.cdx.json" -o cyclonedx-json \
+            > "${{ github.event.repository.name }}-sbom.json" 2> /tmp/grype.err; echo $? > /tmp/grype.exit) &
+          echo $! > /tmp/grype.pid
+          echo "Grype scan started in background (PID $(cat /tmp/grype.pid))."
 
       - name: Lint Dockerfile with Hadolint
         id: hadolint
@@ -424,24 +433,31 @@ jobs:
           OUT_FILE="${SBOM_FILE%.json}-CycloneDX-sha256.json"
           DIGEST_TOOL="${{ inputs.digest_tool }}"
 
-          if [ "$DIGEST_TOOL" = "docker" ]; then
-            DIGEST=$(docker inspect "$IMAGE" \
-              | jq -r '.[0].RepoDigests[0]' \
-              | cut -d'@' -f2)
-          else
-            # Default: skopeo queries the registry manifest directly — no credential storage
-            if [[ "$IMAGE" == *".amazonaws.com"* ]]; then
-              if [[ "$REG_USER" == "AWS" ]]; then
-                ECR_TOKEN="$REG_PASS"
-              else
-                ECR_TOKEN=$(AWS_ACCESS_KEY_ID="$REG_USER" AWS_SECRET_ACCESS_KEY="$REG_PASS" \
-                  aws ecr get-login-password --region "$REG_REGION")
-              fi
-              DIGEST=$(skopeo inspect --username "AWS" --password "$ECR_TOKEN" \
-                docker://"$IMAGE" | jq -r '.Digest')
+          # Try the digest Syft already embedded first (fast, no network call)
+          SYFT_FILE="${{ github.event.repository.name }}-sbom.cdx.json"
+          DIGEST=$(jq -r '(.metadata.component.hashes // [])[] | select(.alg == "SHA-256") | .content' "$SYFT_FILE" 2>/dev/null | head -1)
+
+          if [ -z "$DIGEST" ] || [ "$DIGEST" = "null" ]; then
+            echo "No digest in Syft SBOM; querying via $DIGEST_TOOL..."
+            if [ "$DIGEST_TOOL" = "docker" ]; then
+              DIGEST=$(docker inspect "$IMAGE" \
+                | jq -r '.[0].RepoDigests[0]' \
+                | cut -d'@' -f2)
             else
-              DIGEST=$(skopeo inspect --username "$REG_USER" --password "$REG_PASS" \
-                docker://"$IMAGE" | jq -r '.Digest')
+              # Default: skopeo queries the registry manifest directly — no credential storage
+              if [[ "$IMAGE" == *".amazonaws.com"* ]]; then
+                if [[ "$REG_USER" == "AWS" ]]; then
+                  ECR_TOKEN="$REG_PASS"
+                else
+                  ECR_TOKEN=$(AWS_ACCESS_KEY_ID="$REG_USER" AWS_SECRET_ACCESS_KEY="$REG_PASS" \
+                    aws ecr get-login-password --region "$REG_REGION")
+                fi
+                DIGEST=$(skopeo inspect --username "AWS" --password "$ECR_TOKEN" \
+                  docker://"$IMAGE" | jq -r '.Digest')
+              else
+                DIGEST=$(skopeo inspect --username "$REG_USER" --password "$REG_PASS" \
+                  docker://"$IMAGE" | jq -r '.Digest')
+              fi
             fi
           fi
 

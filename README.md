@@ -47,6 +47,7 @@ The following secrets must be available in the client's organizational secrets. 
 | `REGISTRY_USERNAME` | String |  No | | Username for container registry |
 | `REGISTRY_REGION` | String |  No | | Region for container registry - **only for AWS ECR** |
 | `dockerfile_path` | String |  No | | Path to Dockerfile for hadolint analysis. Leave empty to auto-extract from image or history when IMAGE is provided. |
+| `digest_tool` | String |  No | 'skopeo' | Tool used to retrieve the image RepoDigest SHA-256. Use `skopeo` (default, no credential storage) or `docker` (docker login + pull + inspect). |
 
 #### Inputs for CoreStack to Upload Scan Results
 | Name | Type | Required | Unique | Default | Description |
@@ -114,7 +115,7 @@ jobs:
 
 ### Angular *development* workflow example (no sbom upload)
 
-To scan and create an SBOM and view the results in your workflow **without** uploading the SBOM to CoreStack, no secrets or `project_name` is required.  Just set the `scan_only` input to 'true'
+To scan and create an SBOM and view the results in your workflow **without** uploading the SBOM to CoreStack, no secrets or `project_name` is required.  Just set the `skip_upload` input to 'true'
 
 ```yaml
 name: Angular Build Test
@@ -136,7 +137,7 @@ jobs:
     uses: corestacklabs/graphion-workflow-templates/.github/workflows/sbom.yml@main
     with:
       PATH: ${{ needs.angular-build.outputs.path }}
-      scan_only: 'true'
+      skip_upload: 'true'
 ```
 
 ### KICS Terraform scan example (Advanced Security Enabled)
