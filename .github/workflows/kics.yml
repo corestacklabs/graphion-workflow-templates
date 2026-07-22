@@ -1,0 +1,56 @@
+name: KICS infrastructure Scan
+
+on:
+  workflow_call:
+    inputs:
+      PATH:
+        description: 'Path to directory for infrastructure scan'
+        required: false
+        type: string
+      KICS_scan_type:
+        description: 'Run KICS scan instead of SBOM generation and upload (Ansible, AzureResourceManager, CloudFormation, Dockerfile, Kubernetes, OpenAPI, Terraform)'
+        type: string
+        required: false
+        default: ''
+      KICS_upload:
+        description: 'When running a KICS scan, upload the results to the GitHub Security tab (true/false)'
+        type: string
+        required: false
+        default: 'false'
+
+jobs:  
+  infrastructure-scan:
+    if: ${{ inputs.KICS_scan_type != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate inputs
+        shell: bash
+        run: |
+          if [[ -z "${{ inputs.PATH  }}" ]]; then
+            echo "Error: 'PATH' is required for infrastructure scans."
+            exit 1
+          fi
+
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Scan Path with KICS
+        uses: Checkmarx/kics-github-action@v2.1.20
+        with:
+         path: ${{ inputs.PATH }}
+         output_formats: 'sarif,json'
+         output_path: '.'
+         ignore_on_exit: 'all'
+         enable_jobs_summary: 'true'
+                  
+      - name: Upload to GitHub Security Tab
+        if: ${{ inputs.KICS_upload == 'true' }}
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: results.sarif
+
+      - name: Upload KICS Artifact
+        uses: actions/upload-artifact@v7
+        with:
+            name: kics-output-json
+            path: results.json
