@@ -2,7 +2,7 @@
 
 All notable changes to the reusable SBOM workflow (`.github/workflows/sbom.yml`) are documented here.
 
-## Unreleased
+## 2026-07-22
 
 ### Changed
 
