@@ -115,7 +115,7 @@ jobs:
           fi
 
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Scan Path with KICS
         uses: Checkmarx/kics-github-action@v2.1.20
@@ -133,7 +133,7 @@ jobs:
           sarif_file: results.sarif
 
       - name: Upload KICS Artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
             name: kics-output-json
             path: results.json
@@ -163,7 +163,7 @@ jobs:
           fi
 
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         
       - name: Create Syft config
         run: |
@@ -177,29 +177,29 @@ jobs:
       - name: Cache Hadolint
         if: ${{ inputs.IMAGE != '' }}
         id: cache-hadolint
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: /usr/local/bin/hadolint
-          key: hadolint-${{ runner.os }}-v2.12.0
+          key: hadolint-${{ runner.os }}-v2.14.0
 
       - name: Install Hadolint
         if: ${{ inputs.IMAGE != '' && steps.cache-hadolint.outputs.cache-hit != 'true' }}
         run: |
-          curl -sSL "https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64" \
+          curl -sSL "https://github.com/hadolint/hadolint/releases/download/v2.14.0/hadolint-Linux-x86_64" \
             -o /usr/local/bin/hadolint
           chmod +x /usr/local/bin/hadolint
 
       - name: Cache Grype
         if: ${{ inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '' }}
         id: cache-grype
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: /usr/local/bin/grype
-          key: grype-${{ runner.os }}-v0.115.0
+          key: grype-${{ runner.os }}-v0.116.0
 
       - name: Install Grype
         if: ${{ (inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '') && steps.cache-grype.outputs.cache-hit != 'true' }}
-        run: curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin v0.115.0
+        run: curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin v0.116.0
 
       - name: Ensure skopeo is available
         if: ${{ inputs.IMAGE != '' && inputs.digest_tool != 'docker' }}
@@ -371,7 +371,7 @@ jobs:
 
       - name: Upload Hadolint Artifact
         if: ${{ inputs.IMAGE != '' && (inputs.dockerfile_path != '' || steps.extract-dockerfile.outputs.dockerfile_path != '') }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: hadolint-json-report-${{ inputs.project_name }}
           path: ${{ github.event.repository.name }}-hadolint.json
@@ -396,7 +396,7 @@ jobs:
 
       - name: Upload Dockle Artifact
         if: ${{ inputs.IMAGE != '' }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: dockle-report-${{ inputs.project_name }}
           path: ${{ github.event.repository.name }}-dockle.json
@@ -532,7 +532,7 @@ jobs:
 
       - name: Upload Grype Artifact
         if: ${{ inputs.IMAGE != '' || inputs.FILE != '' || inputs.PATH != '' }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
             name: grype-output-cdx-${{ inputs.project_name }}
             path: ${{ github.event.repository.name }}-sbom.json
