@@ -1,0 +1,94 @@
+name: Scan SBOM (Grype)
+
+on:
+  workflow_call:
+    inputs:
+      project_name:
+        description: 'Tag used to find the input SBOM artifact (sbom-cdx-<project_name>, produced by create-sbom.yml) and to name the output artifact (sbom-scanned-<project_name>). Must match the value passed to create-sbom.yml/upload-sbom.yml.'
+        type: string
+        required: true
+
+jobs:
+  scan-sbom:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download SBOM artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: sbom-cdx-${{ inputs.project_name }}
+          path: sbom-input
+
+      - name: Locate SBOM file
+        run: |
+          # The artifact's internal filename only matches our convention when
+          # create-sbom.yml produced it. A customer-supplied SBOM can be named
+          # anything, so just require the artifact to contain exactly one file
+          # and use whatever it's called.
+          FILES=(sbom-input/*)
+          if [ "${#FILES[@]}" -eq 0 ]; then
+            echo "::error::SBOM artifact 'sbom-cdx-${{ inputs.project_name }}' is empty."
+            exit 1
+          fi
+          if [ "${#FILES[@]}" -gt 1 ]; then
+            echo "::error::SBOM artifact 'sbom-cdx-${{ inputs.project_name }}' must contain exactly one file, found ${#FILES[@]}: ${FILES[*]}"
+            exit 1
+          fi
+          cp "${FILES[0]}" "${{ github.event.repository.name }}-sbom.cdx.json"
+
+      - name: Cache Grype
+        id: cache-grype
+        uses: actions/cache@v6
+        with:
+          path: /usr/local/bin/grype
+          key: grype-${{ runner.os }}-v0.116.0
+
+      - name: Install Grype
+        if: ${{ steps.cache-grype.outputs.cache-hit != 'true' }}
+        run: curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin v0.116.0
+
+      - name: Run Grype Scan
+        run: |
+          grype sbom:"${{ github.event.repository.name }}-sbom.cdx.json" -o cyclonedx-json \
+            > "${{ github.event.repository.name }}-sbom.json" 2> /tmp/grype.err
+          EXIT_CODE=$?
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "::error::Grype scan failed with exit code $EXIT_CODE"
+            echo "----- grype stderr -----"
+            cat /tmp/grype.err 2>/dev/null || echo "(no stderr captured)"
+            echo "------------------------"
+            exit 1
+          fi
+          echo "Grype scan complete."
+
+      - name: Upload Scanned SBOM Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: sbom-scanned-${{ inputs.project_name }}
+          path: ${{ github.event.repository.name }}-sbom.json
+
+      - name: Grype Analysis
+        id: grype-analysis
+        run: |
+          set +e
+          CRITICAL_CVE=$(cat ${{ github.event.repository.name }}-sbom.json | jq '[.vulnerabilities[]? | select(.ratings[].severity == "critical")] |length')
+          HIGH_CVE=$(cat ${{ github.event.repository.name }}-sbom.json | jq '[.vulnerabilities[]? | select(.ratings[].severity == "high")] |length')
+          MEDIUM_CVE=$(cat ${{ github.event.repository.name }}-sbom.json | jq '[.vulnerabilities[]? | select(.ratings[].severity == "medium")] |length')
+          set -e
+          echo "Criticals=$CRITICAL_CVE" >> $GITHUB_OUTPUT
+          echo "Highs=$HIGH_CVE" >> $GITHUB_OUTPUT
+          echo "Mediums=$MEDIUM_CVE" >> $GITHUB_OUTPUT
+          echo "Grype analysis complete: $CRITICAL_CVE critical, $HIGH_CVE high, $MEDIUM_CVE medium vulnerabilities found."
+
+      - name: Generate Summary
+        run: |
+          {
+            echo "## Grype Scan complete"
+            echo "- **Scanned SBOM Artifact:** sbom-scanned-${{ inputs.project_name }}"
+            echo ""
+            echo "### Grype Scan Summary"
+            echo "| Severity | Count |"
+            echo "|---|---|"
+            echo "| Critical | ${{ steps.grype-analysis.outputs.Criticals }} |"
+            echo "| High | ${{ steps.grype-analysis.outputs.Highs }} |"
+            echo "| Medium | ${{ steps.grype-analysis.outputs.Mediums }} |"
+          } >> $GITHUB_STEP_SUMMARY
